@@ -132,7 +132,7 @@ public class tools {
 	        return tuples.tupleIndex(key, bitMask, smallTuplePlan);
 	    }
 	
-	/*   public static void bulkCopyRecords(
+	   public static void bulkCopyRecords(
 	            MemorySegment source,
 	            long sourceBase,
 	            MemorySegment target,
@@ -140,7 +140,7 @@ public class tools {
 	            int records
 	    ) {
 	        MemorySegment.copy(source, sourceBase, target, targetBase, tools.bytesForRecords(records));
-	    }*/
+	    }
 	   
 	    public static void parallelBulkCopy(
 	            MemorySegment source,
