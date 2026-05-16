@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>APEX by StrmCkr</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div>
+        <h1>APEX</h1>
+        <p class="credit">by StrmCkr</p>
+        <p>MSD radix bucket scatter followed by LSD passes inside each bucket.</p>
+      </div>
+      <div class="controls">
+        <label>
+          Records
+          <input id="recordCount" type="number" min="8" max="100000" step="8" value="96">
+        </label>
+        <label>
+          Mode
+          <select id="dataMode">
+            <option>RANDOM</option>
+            <option>SORTED</option>
+            <option>REVERSE</option>
+            <option>DUPLICATES</option>
+            <option>LOW_BITS_ONLY</option>
+            <option>HIGH_BITS_ONLY</option>
+            <option>DELAYED_ENTROPY</option>
+            <option>SAWTOOTH</option>
+            <option>ALL_EQUAL</option>
+          </select>
+        </label>
+        <label>
+          MSD bits
+          <input id="msdBits" type="number" min="2" max="13" step="1" value="4">
+        </label>
+        <label>
+          LSD bits
+          <input id="lsdBits" type="number" min="2" max="17" step="1" value="3">
+        </label>
+        <label>
+          Threads
+          <select id="workerCount">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+            <option value="16" SELECTED>16</option>
+			<option value="32" >32</option>
+			<option value="64" >64</option>
+			
+          </select>
+        </label>
+        <label class="check-control">
+          Work steal
+          <input id="workStealing" type="checkbox">
+        </label>
+        <label>
+          Speed
+          <input id="speed" type="range" min="1" max="100" value="45">
+        </label>
+        <button id="resetBtn" type="button">Reset</button>
+        <button id="playBtn" type="button">Play</button>
+        <button id="stepBtn" type="button">Step</button>
+      </div>
+    </header>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>Phase 0: source array</h2>
+        <output id="status">Ready</output>
+      </div>
+      <canvas id="sourceCanvas" class="source-canvas" width="1400" height="180"></canvas>
+    </section>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>Phase 1: MSD radix bucket scatter</h2>
+        <span id="msdLabel"></span>
+      </div>
+      <canvas id="bucketCanvas" class="bucket-canvas" width="1400" height="360"></canvas>
+    </section>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>Phase 2: LSD radix cycles inside buckets</h2>
+        <span id="lsdLabel"></span>
+      </div>
+      <canvas id="lsdCanvas" class="lsd-canvas" width="1400" height="360"></canvas>
+    </section>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>Sorted output array</h2>
+        <span id="sortedLabel">Appears when the final bucket is complete.</span>
+      </div>
+      <canvas id="sortedCanvas" class="source-canvas" width="1400" height="180"></canvas>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

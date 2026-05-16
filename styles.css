@@ -1,0 +1,168 @@
+:root {
+  color-scheme: dark;
+  --bg: #101314;
+  --panel: #181d1f;
+  --panel-2: #20272a;
+  --line: #314044;
+  --text: #edf3f1;
+  --muted: #9fb0ac;
+  --accent: #46d6a7;
+  --accent-2: #f2b84b;
+  --warn: #fb6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  overflow-x: hidden;
+}
+
+.app {
+  min-height: 100vh;
+  padding: 18px;
+  max-width: 100vw;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 1.8fr);
+  gap: 18px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 26px;
+  line-height: 1.1;
+}
+
+p,
+span,
+output,
+label {
+  color: var(--muted);
+}
+
+.credit {
+  margin-top: 4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.check-control input {
+  width: 34px;
+  justify-self: start;
+  accent-color: var(--accent);
+}
+
+input,
+select,
+button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+input,
+select {
+  width: 100%;
+  padding: 4px 8px;
+}
+
+button {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+.stage {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.lane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  background: #111617;
+}
+
+.source-canvas {
+  height: 180px;
+}
+
+.bucket-canvas {
+  height: 430px;
+}
+
+.lsd-canvas {
+  height: 640px;
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .controls {
+    grid-template-columns: repeat(3, minmax(88px, 1fr));
+  }
+
+  .bucket-canvas {
+    height: 520px;
+  }
+
+  .lsd-canvas {
+    height: 760px;
+  }
+}
