@@ -137,6 +137,9 @@ import scatter.scattered;
  *   --enable-preview
  *   -XX:MaxDirectMemorySize=80g
  *   -Xmx16G
+ *   
+ *   visualizer: https://strmckr.github.io/A.P.E.X/
+ *   github: https://github.com/StrmCkr/A.P.E.X/
  *
  * Options:
  *   mode          Single data mode for default run.
