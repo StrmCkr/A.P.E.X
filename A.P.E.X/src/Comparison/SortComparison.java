@@ -191,7 +191,7 @@ public final class SortComparison {
             try (Arena arena = Arena.ofShared()) {
                 long bytes = tools.bytesForRecords(records);
                 MemorySegment src = arena.allocate(bytes, alignment);
-                MemorySegment dst = Apex.IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
+                MemorySegment dst = arena.allocate(bytes, alignment);
 
                 initiatedata.initData(src, records, mode);
 
@@ -205,28 +205,19 @@ public final class SortComparison {
                     if (msdPlan.inputAscending) {
                         sorted = src;
                     } else if (msdPlan.inputDescending) {
-                        if (Apex.IN_PLACE_MSD_SCATTER) {
-                            tools.reverseRecordsInPlace(src, 0, records);
-                            sorted = src;
-                        } else {
+                        
                             tools.reverseCopyRecords(src, 0, dst, 0, records);
                             sorted = dst;
-                        }
+                        
                     } else if (Apex.sourceAlreadyFinal(msdPlan, cfg)) {
                         sorted = src;
                     } else {
-                        if (Apex.IN_PLACE_MSD_SCATTER) {
-                            scattered.inPlaceScatterIntoMsdBuckets(src, records, msdPlan, cfg);
-                        } else {
+                       
                             scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
-                        }
+                        
                     }
 
-                    MemorySegment lsdScratch = src;
-                    if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
-                            Apex.IN_PLACE_MSD_SCATTER && Apex.planNeedsOffHeapScratch(msdPlan, cfg)) {
-                        lsdScratch = arena.allocate(bytes, alignment);
-                    }
+                    MemorySegment lsdScratch = src;                    
 
                     if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
                             Apex.planNeedsRefinement(msdPlan, cfg)) {
@@ -1726,8 +1717,7 @@ public final class SortComparison {
         Apex.THREADS = args.threads;
         Apex.LSD_WORK_STEALING = args.lsdWorkStealing;
         Apex.WORK_STEAL_BATCH = Integer.getInteger("apex.workBatch", 4);
-        Apex.PACKED_TUPLE_CYCLES = args.tuplePacking;
-        Apex.IN_PLACE_MSD_SCATTER = args.inPlace;
+        Apex.PACKED_TUPLE_CYCLES = args.tuplePacking;       
         Apex.DIRECT_TUPLE_BITS = args.tupleBits;
         Apex.MAX_HEAP_SCRATCH_RECORDS = args.heapScratchRecords;
 

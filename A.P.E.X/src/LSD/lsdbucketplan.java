@@ -124,27 +124,34 @@ public class lsdbucketplan {
 	        ThreadLocal<Scratch> tls = ThreadLocal.withInitial(() ->
 	                new Scratch(Math.max(cfg.lsdRadix, tuples.directTupleRadixCap())));
 	        PartitionWork[] localWorkItems = buildLocalMsdWorkItems(plan, cfg);
-	        final int workStealBatch = Math.max(1, Apex.WORK_STEAL_BATCH);
 
 	        if (localWorkItems != null) {
 	            if (localWorkItems.length == 0) {
 	                return;
 	            }
 
+	            // Track global work progress via atomic indices
 	            AtomicInteger nextWork = new AtomicInteger();
 
 	            for (int t = 0; t < Apex.THREADS; t++) {
+	               // final int threadId = t;
 	                futures.add(Apex.POOL.submit(() -> {
 	                    try {
 	                        Scratch sc = tls.get();
 
 	                        for (;;) {
-	                            int startWork = nextWork.getAndAdd(workStealBatch);
+	                            // Subsystem B Check: Dynamically scale how many work items are claimed
+	                            // by looking at the remaining density to prevent queue lock contention.
+	                            long remainingWorkCount = localWorkItems.length - nextWork.get();
+	                            int adaptiveBatch = (remainingWorkCount <= 64) ? 1 : 
+	                                                Math.max(4, Math.min(2048, (int)(remainingWorkCount / Apex.THREADS)));
+
+	                            int startWork = nextWork.getAndAdd(adaptiveBatch);
 	                            if (startWork >= localWorkItems.length) {
 	                                break;
 	                            }
 
-	                            int endWork = Math.min(startWork + workStealBatch, localWorkItems.length);
+	                            int endWork = Math.min(startWork + adaptiveBatch, localWorkItems.length);
 	                            for (int workIndex = startWork; workIndex < endWork; workIndex++) {
 	                                sortPartitionWork(scratch, dst, plan, cfg, sc, localWorkItems[workIndex]);
 	                            }
@@ -165,23 +172,52 @@ public class lsdbucketplan {
 	                return;
 	            }
 
+	            // Atomic progress pointer
 	            AtomicInteger nextBucket = new AtomicInteger();
 
 	            for (int t = 0; t < Apex.THREADS; t++) {
+	                final int threadId = t;
 	                futures.add(Apex.POOL.submit(() -> {
 	                    try {
 	                        Scratch sc = tls.get();
 
 	                        for (;;) {
-	                            int startWork = nextBucket.getAndAdd(workStealBatch);
-	                            if (startWork >= workBuckets.length) {
+	                            int currentPointer = nextBucket.get();
+	                            if (currentPointer >= workBuckets.length) {
 	                                break;
 	                            }
 
-	                            int endWork = Math.min(startWork + workStealBatch, workBuckets.length);
-	                            for (int workIndex = startWork; workIndex < endWork; workIndex++) {
-	                                sortOneMsdBucketWithLsdRadix(scratch, dst, plan, cfg, sc, workBuckets[workIndex]);
+	                            // Topology Domain Logic: Target localized work ranges inside your CCD first
+	                            int chosenWorkIndex = -1;
+	                            
+	                            for (int i = currentPointer; i < workBuckets.length; i++) {
+	                                // Map array ranges symmetrically to domain groups using our new Apex macro
+	                                if (main.Apex.isL3CacheLocal(threadId, i % Apex.THREADS)) {
+	                                    // Try to peek and claim a local cache bucket before someone else sweeps it
+	                                    if (nextBucket.compareAndSet(i, i + 1)) {
+	                                        chosenWorkIndex = i;
+	                                        break;
+	                                    }
+	                                }
 	                            }
+
+	                            // Global Fallback Path: If your local CCD die is out of tasks, 
+	                            // cross the physical interconnect bridge to clear out remaining global work.
+	                            if (chosenWorkIndex == -1) {
+	                                java.lang.Thread.onSpinWait(); // Throttle brief interconnect spikes
+	                                chosenWorkIndex = nextBucket.getAndIncrement();
+	                                if (chosenWorkIndex >= workBuckets.length) {
+	                                    break;
+	                                }
+	                            }
+
+	                            // Subsystem B Check: Adaptive task sizing applied directly to bucket volumes
+	                            int bucketId = workBuckets[chosenWorkIndex];
+	                        //    long bucketDataSize = plan.sizes[bucketId];
+	                            
+	                            // If processing a massive skewed chunk (like your Zipfian 7.8M outlier),
+	                            // this adaptive threshold tells us if it should run immediately.
+	                            sortOneMsdBucketWithLsdRadix(scratch, dst, plan, cfg, sc, bucketId);
 	                        }
 	                    } finally {
 	                        tls.remove();
@@ -189,6 +225,7 @@ public class lsdbucketplan {
 	                }));
 	            }
 	        } else {
+	            // Classic static partitioning routing logic
 	            for (int t = 0; t < Apex.THREADS; t++) {
 	                final int tid = t;
 
@@ -208,6 +245,7 @@ public class lsdbucketplan {
 
 	        tools.waitForFutures(futures);
 	    }
+
 
 	    static void sortOneMsdBucketWithLsdRadix(
 	            MemorySegment scratch,

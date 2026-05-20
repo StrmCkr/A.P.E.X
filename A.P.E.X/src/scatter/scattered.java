@@ -206,142 +206,12 @@ public class scattered {
 
                     dst.set(Apex.LONG, q, k);
                     dst.set(Apex.LONG, q + 8, v);
-
                     p += Apex.RECORD_BYTES;
                 }
             }));
         }
 
         tools.waitForFutures(futures);
-    }
-
-    public static void inPlaceScatterIntoMsdBuckets(
-            MemorySegment data,
-            long n,
-            MsdBucketPlan plan,
-            Config cfg
-    ) {
-        if (n <= 1) {
-            return;
-        }
-
-        InPlaceLayout layout = buildInPlaceLayout(plan, cfg);
-        int tileRecords = Math.max(1, Apex.IN_PLACE_TILE_RECORDS);
-        long[] tileKeys = new long[tileRecords];
-        long[] tileValues = new long[tileRecords];
-        int[] tileTargets = new int[tileRecords];
-
-        for (int partition = 0; partition < layout.partitionCount; partition++) {
-            long i = layout.next[partition];
-            long end = layout.ends[partition];
-
-            while (i < end) {
-                int count = (int) Math.min((long) tileRecords, end - i);
-                boolean allInPartition = true;
-                long p = i << 4;
-
-                for (int j = 0; j < count; j++) {
-                    long k = data.get(Apex.LONG, p);
-                    long v = data.get(Apex.LONG, p + 8);
-                    int target = targetPartition(k, plan, cfg, layout);
-
-                    tileKeys[j] = k;
-                    tileValues[j] = v;
-                    tileTargets[j] = target;
-                    allInPartition &= target == partition;
-                    p += Apex.RECORD_BYTES;
-                }
-
-                if (allInPartition) {
-                    i += count;
-                    layout.next[partition] = i;
-                    continue;
-                }
-
-                for (int j = 0; j < count; j++) {
-                    int target = tileTargets[j];
-                    if (target == partition) {
-                        continue;
-                    }
-
-                    settleRecord(
-                            data,
-                            i + j,
-                            tileKeys[j],
-                            tileValues[j],
-                            target,
-                            partition,
-                            plan,
-                            cfg,
-                            layout
-                    );
-                }
-
-                i += count;
-                layout.next[partition] = i;
-            }
-        }
-    }
-
-    static InPlaceLayout buildInPlaceLayout(MsdBucketPlan plan, Config cfg) {
-        int[] parentPartitions = new int[cfg.msdBucketCount];
-        int[][] localChildPartitions = new int[cfg.msdBucketCount][];
-        Arrays.fill(parentPartitions, -1);
-
-        int capacity = Math.max(1, cfg.msdBucketCount);
-        long[] starts = new long[capacity];
-        long[] ends = new long[capacity];
-        int partitionCount = 0;
-
-        for (int parent = 0; parent < cfg.msdBucketCount; parent++) {
-            if (plan.sizes[parent] == 0) {
-                continue;
-            }
-
-            int localShift = plan.localMsdShifts[parent];
-            if (localShift >= 0) {
-                int[] childPartitions = new int[cfg.msdBucketCount];
-                Arrays.fill(childPartitions, -1);
-                localChildPartitions[parent] = childPartitions;
-
-                for (int child = 0; child < cfg.msdBucketCount; child++) {
-                    int size = plan.localSizes[parent][child];
-                    if (size == 0) {
-                        continue;
-                    }
-
-                    if (partitionCount == starts.length) {
-                        int newCapacity = starts.length << 1;
-                        starts = Arrays.copyOf(starts, newCapacity);
-                        ends = Arrays.copyOf(ends, newCapacity);
-                    }
-
-                    starts[partitionCount] = plan.localStarts[parent][child];
-                    ends[partitionCount] = plan.localStarts[parent][child] + size;
-                    childPartitions[child] = partitionCount;
-                    partitionCount++;
-                }
-            } else {
-                if (partitionCount == starts.length) {
-                    int newCapacity = starts.length << 1;
-                    starts = Arrays.copyOf(starts, newCapacity);
-                    ends = Arrays.copyOf(ends, newCapacity);
-                }
-
-                starts[partitionCount] = plan.starts[parent];
-                ends[partitionCount] = plan.starts[parent] + plan.sizes[parent];
-                parentPartitions[parent] = partitionCount;
-                partitionCount++;
-            }
-        }
-
-        return new InPlaceLayout(
-                Arrays.copyOf(starts, partitionCount),
-                Arrays.copyOf(ends, partitionCount),
-                parentPartitions,
-                localChildPartitions,
-                partitionCount
-        );
     }
 
     static void settleRecord(
@@ -399,4 +269,20 @@ public class scattered {
 
         return layout.parentPartitions[parent];
     }
-}
+
+    /**
+     * 🛡️ Master Class Orchestration Interface.
+     * Drop-in gateway connecting directly to your updated out-of-place execution pipelines.
+     */
+    public static void runStandardMsdScatter(
+            MemorySegment src,
+            MemorySegment dst,
+            MsdBucketPlan plan,
+            Config cfg
+    ) throws Exception {
+        scatterIntoMsdBuckets(src, dst, plan.totalRecords, plan, cfg);
+    }}
+
+   
+
+

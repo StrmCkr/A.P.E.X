@@ -157,6 +157,8 @@ import scatter.scattered;
  *   extensibility, and deep runtime adaptability rather than
  *   static one-size-fits-all radix behavior.
  */
+
+
  
  
  /* Runtime notes:
@@ -197,6 +199,7 @@ public class Apex {
             "apex.threads",
             Runtime.getRuntime().availableProcessors()
     );
+    public static final int THREADS_PER_DOMAINGROUP = Math.max(1, THREADS / 2);
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;
@@ -219,12 +222,15 @@ public class Apex {
    public  static int LOCAL_MSD_MIN_RECORDS = Integer.getInteger("apex.localMsdMinRecords", 1_048_576);
    public  static int LOCAL_MSD_MIN_PASSES = Integer.getInteger("apex.localMsdMinPasses", 2);
    public  static int LOCAL_MSD_MIN_WINDOW_BITS = Integer.getInteger("apex.localMsdMinWindowBits", 2);
-   public  static int LOCAL_MSD_MIN_SHARE_DIVISOR = Integer.getInteger("apex.localMsdMinShareDivisor", 8);
-   public  static int WORK_STEAL_BATCH = Integer.getInteger("apex.workBatch", 4);
-   public  static boolean IN_PLACE_MSD_SCATTER = Boolean.parseBoolean(
-           System.getProperty("apex.inPlaceMsd", "false")
-   );
-   public  static int IN_PLACE_TILE_RECORDS = Integer.getInteger("apex.inPlaceTileRecords", 64);
+   public static int LOCAL_MSD_MIN_SHARE_DIVISOR = Integer.getInteger(
+	        "apex.localMsdMinShareDivisor", 
+	        Math.max(2, THREADS / 2)
+	);
+   public static int WORK_STEAL_BATCH = Integer.getInteger(
+	        "apex.workBatch", 
+	        Math.max(4, THREADS / 2)
+	);   
+   
    public static int LARGE_PARTITION_PERMIT_COUNT = 1;
    public static Semaphore LARGE_PARTITION_PERMITS = new Semaphore(1);
    public static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED;
@@ -233,57 +239,74 @@ public class Apex {
    public  static final byte BUCKET_ALL_EQUAL = 1;
    public  static final byte BUCKET_MIXED = 2;
      
+   public static boolean isL3CacheLocal(int currentWorkerId, int targetWorkerId) {
+       int currentDomainGroup = currentWorkerId / THREADS_PER_DOMAINGROUP;
+       int targetDomainGroup = targetWorkerId / THREADS_PER_DOMAINGROUP;
+       return (currentDomainGroup == targetDomainGroup);
+   }
 
-    public static class Scratch {
-        public long[] k1 = new long[1024];
-        public long[] v1 = new long[1024];
-        public long[] k2 = new long[1024];
-        public  long[] v2 = new long[1024];
-        public int[] counts;
-        public int[] bucketStarts = new int[0];
-        public int[] bucketOffsets = new int[0];
-        public int[] bucketEnds = new int[0];
-        public long[] bucketOrMasks = new long[0];
-        public long[] bucketAndMasks = new long[0];
-        public final int[] cycleShifts = new int[64];
-        public final int[] cycleMasks = new int[64];
-        public final long[] cycleBitMasks = new long[64];
-        public final long[] cycleTuplePlans = new long[64];
+   public static class Scratch {
+       // --- Cache Line Padding Group 1: Isolate Temporary Swapping Arrays ---
+       private long p01, p02, p03, p04, p05, p06, p07, p08; 
+       public long[] k1 = new long[1024];
+       public long[] v1 = new long[1024];
+       private long p09, p10, p11, p12, p13, p14, p15, p16;
+       public long[] k2 = new long[1024];
+       public long[] v2 = new long[1024];
 
-        public Scratch(int lsdRadix) {
-            counts = new int[lsdRadix];
-        }
+       // --- Cache Line Padding Group 2: Isolate Dense Core Histograms ---
+       private long p17, p18, p19, p20, p21, p22, p23, p24;
+       public int[] counts;
+       public int[] bucketStarts = new int[0];
+       public int[] bucketOffsets = new int[0];
+       public int[] bucketEnds = new int[0];
 
-        public void ensure(int n) {
-            if (k1.length >= n) {
-                return;
-            }
+       // --- Cache Line Padding Group 3: Isolate Entropic Masks ---
+       private long p25, p26, p27, p28, p29, p30, p31, p32;
+       public long[] bucketOrMasks = new long[0];
+       public long[] bucketAndMasks = new long[0];
 
-            int cap = Integer.highestOneBit(n - 1) << 1;
-            k1 = new long[cap];
-            v1 = new long[cap];
-            k2 = new long[cap];
-            v2 = new long[cap];
-        }
+       // --- Cache Line Padding Group 4: Isolate Radix Cycle Plans ---
+       private long p33, p34, p35, p36, p37, p38, p39, p40;
+       public final int[] cycleShifts = new int[64];
+       public final int[] cycleMasks = new int[64];
+       public final long[] cycleBitMasks = new long[64];
+       public final long[] cycleTuplePlans = new long[64];
+       private long p41, p42, p43, p44, p45, p46, p47, p48;
 
-        public void ensureCounts(int n) {
-            if (counts.length < n) {
-                counts = new int[n];
-            }
-        }
+       public Scratch(int lsdRadix) {
+           counts = new int[lsdRadix];
+       }
 
-        public void ensureBucketScratch(int n) {
-            if (bucketStarts.length >= n) {
-                return;
-            }
+       public void ensure(int n) {
+           if (k1.length >= n) {
+               return;
+           }
+           int cap = Integer.highestOneBit(n - 1) << 1;
+           k1 = new long[cap];
+           v1 = new long[cap];
+           k2 = new long[cap];
+           v2 = new long[cap];
+       }
 
-            bucketStarts = new int[n];
-            bucketOffsets = new int[n];
-            bucketEnds = new int[n];
-            bucketOrMasks = new long[n];
-            bucketAndMasks = new long[n];
-        }
-    }
+       public void ensureCounts(int n) {
+           if (counts.length < n) {
+               counts = new int[n];
+           }
+       }
+
+       public void ensureBucketScratch(int n) {
+           if (bucketStarts.length >= n) {
+               return;
+           }
+           bucketStarts = new int[n];
+           bucketOffsets = new int[n];
+           bucketEnds = new int[n];
+           bucketOrMasks = new long[n];
+           bucketAndMasks = new long[n];
+       }
+   }
+
   
 
     public static void main(String[] args) throws Exception {
@@ -292,9 +315,7 @@ public class Apex {
         THREADS = options.threads;
         LSD_WORK_STEALING = options.lsdWorkStealing;
         WORK_STEAL_BATCH = options.workStealBatch;
-        PACKED_TUPLE_CYCLES = options.packedTupleCycles;
-        IN_PLACE_MSD_SCATTER = options.inPlaceMsdScatter;
-        IN_PLACE_TILE_RECORDS = options.inPlaceTileRecords;
+        PACKED_TUPLE_CYCLES = options.packedTupleCycles;       
         DIRECT_TUPLE_BITS = options.directTupleBits;
         MAX_HEAP_SCRATCH_RECORDS = options.heapScratchRecords;
         tools.configureLargePartitionPermits(options);
@@ -312,8 +333,7 @@ public class Apex {
             System.out.println("Large partition permits: " + LARGE_PARTITION_PERMIT_COUNT);
             System.out.println("LSD work stealing: " + LSD_WORK_STEALING);
             System.out.println("Work steal batch: " + WORK_STEAL_BATCH);
-            System.out.println("MSD scatter mode: " +
-                    (IN_PLACE_MSD_SCATTER ? "in-place tile=" + IN_PLACE_TILE_RECORDS : "src->dst"));
+            System.out.println("MSD scatter mode:src->dst");
             System.out.println("Packed tuple cycles: " + (PACKED_TUPLE_CYCLES ? "forced" : "auto"));
             System.out.println("Local MSD repartition: " + LOCAL_MSD_REPARTITION +
                     " minRecords=" + LOCAL_MSD_MIN_RECORDS +
@@ -387,13 +407,8 @@ public class Apex {
         System.out.println("Records: " + records);
         DataTopology.printTopology(mode);
         System.out.println("Config: " + cfg);
-        if (IN_PLACE_MSD_SCATTER) {
-            System.out.printf("Data buffers: %.2f GiB (single data buffer; optional LSD scratch)%n",
-                    singleDataBufferGiB(records));
-        } else {
-            System.out.printf("Data buffers: %.2f GiB (src+dst; src reused as LSD scratch)%n",
+        System.out.printf("Data buffers: %.2f GiB (src+dst; src reused as LSD scratch)%n",
                     dataBufferGiB(records));
-        }
 
         if (records == 0 || mode == DataMode.EMPTY) {
             System.out.println("EMPTY dataset - nothing to do");
@@ -405,7 +420,7 @@ public class Apex {
         try (Arena arena = Arena.ofShared()) {
             long bytes = tools.bytesForRecords(records);
             MemorySegment src = arena.allocate(bytes, alignment);
-            MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
+            MemorySegment dst = arena.allocate(bytes, alignment);
 
             System.out.println("Initializing: " + records + " records");
             initiatedata.initData(src, records, mode);
@@ -425,34 +440,19 @@ public class Apex {
                     System.out.println("MSD/LSD skipped (input already ascending)");
                 } else if (msdPlan.inputDescending) {
                     t0 = Timer.start();
-                    if (IN_PLACE_MSD_SCATTER) {
-                        tools.reverseRecordsInPlace(src, 0, records);
-                        sorted = src;
-                    } else {
-                        tools.reverseCopyRecords(src, 0, dst, 0, records);
-                        sorted = dst;
-                    }
+                    tools.reverseCopyRecords(src, 0, dst, 0, records);
+                    sorted = dst;
                     report("Descending reverse", records, t0);
                 } else if (sourceAlreadyFinal(msdPlan, cfg)) {
                     sorted = src;
                     System.out.println("MSD scatter skipped (source already final)");
                 } else {
                     t0 = Timer.start();
-                    if (IN_PLACE_MSD_SCATTER) {
-                        scattered.inPlaceScatterIntoMsdBuckets(src, records, msdPlan, cfg);
-                    } else {
-                        scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
-                    }
+                    scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
                     report("MSD scatter", records, t0);
                 }
 
-                MemorySegment lsdScratch = src;
-                if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
-                        IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
-                    lsdScratch = arena.allocate(bytes, alignment);
-                    System.out.printf("LSD scratch: %.2f GiB (needed for off-heap refinements)%n",
-                            singleDataBufferGiB(records));
-                }
+                MemorySegment lsdScratch = src;                
 
                 if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
                     t0 = Timer.start();
@@ -473,7 +473,6 @@ public class Apex {
         return (System.nanoTime() - start) / 1e9;
     }
 
-  
     static double dataBufferGiB(long records) {
         return (records * (double) RECORD_BYTES * 2.0) / (1024.0 * 1024.0 * 1024.0);
     }
@@ -639,14 +638,7 @@ public class Apex {
             return src;
         }
 
-        Timer reverse = announce ? Timer.start() : null;
-        if (IN_PLACE_MSD_SCATTER) {
-            tools.reverseRecordsInPlace(src, 0, records);
-            if (announce) {
-                report("Descending reverse", records, reverse);
-            }
-            return src;
-        }
+        Timer reverse = announce ? Timer.start() : null;        
 
         tools.reverseCopyRecords(src, 0, dst, 0, records);
         if (announce) {
@@ -665,7 +657,7 @@ public class Apex {
         try (Arena arena = Arena.ofShared()) {
             long bytes = tools.bytesForRecords(testN);
             MemorySegment src = arena.allocate(bytes, alignment);
-            MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
+            MemorySegment dst = arena.allocate(bytes, alignment);
 
             initiatedata.initData(src, testN, mode);
 
@@ -679,28 +671,15 @@ public class Apex {
                 if (msdPlan.inputAscending) {
                     sorted = src;
                 } else if (msdPlan.inputDescending) {
-                    if (IN_PLACE_MSD_SCATTER) {
-                        tools.reverseRecordsInPlace(src, 0, testN);
-                        sorted = src;
-                    } else {
-                        tools.reverseCopyRecords(src, 0, dst, 0, testN);
-                        sorted = dst;
-                    }
+                    tools.reverseCopyRecords(src, 0, dst, 0, testN);
+                    sorted = dst;
                 } else if (sourceAlreadyFinal(msdPlan, cfg)) {
                     sorted = src;
                 } else {
-                    if (IN_PLACE_MSD_SCATTER) {
-                        scattered.inPlaceScatterIntoMsdBuckets(src, testN, msdPlan, cfg);
-                    } else {
-                        scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
-                    }
+                    scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
                 }
 
                 MemorySegment lsdScratch = src;
-                if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
-                        IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
-                    lsdScratch = arena.allocate(bytes, alignment);
-                }
 
                 if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
                     lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
@@ -777,8 +756,7 @@ public class Apex {
         return false;
     }
 
-
-  static void printMsdBucketStats(MsdBucketPlan plan, Config cfg) {
+    static void printMsdBucketStats(MsdBucketPlan plan, Config cfg) {
         int nonEmpty = 0;
         int empty = 0;
         int allEqual = 0;
@@ -901,11 +879,11 @@ public class Apex {
                             if (plannedCycles > 0 && tupleTailMask != 0L) {
                                 tupleTailPasses++;
                             }
-	                        }
+                        }
 
-	                        total += s;
-	                        continue;
-	                    }
+                        total += s;
+                        continue;
+                    }
 
                     if (s > MAX_HEAP_SCRATCH_RECORDS) {
                         offHeapRefinements++;
@@ -969,8 +947,6 @@ public class Apex {
         System.out.println("Total bucketed: " + total);
     }
 
- 
-
     public static void runModesOnce(Config cfg, long n, long alignment, List<DataMode> modes) throws Exception {
         System.out.println("=== SINGLE FULL MODE RUN START ===");
         System.out.println("Records per mode: " + n);
@@ -988,7 +964,7 @@ public class Apex {
             try (Arena arena = Arena.ofShared()) {
                 long bytes = tools.bytesForRecords(n);
                 MemorySegment src = arena.allocate(bytes, alignment);
-                MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
+                MemorySegment dst = arena.allocate(bytes, alignment);
 
                 initiatedata.initData(src, n, mode);
 
@@ -1000,29 +976,16 @@ public class Apex {
                     sorted = dst;
                     if (plan.inputAscending) {
                         sorted = src;
-                    } else if (plan.inputDescending) {
-                        if (IN_PLACE_MSD_SCATTER) {
-                            tools.reverseRecordsInPlace(src, 0, n);
-                            sorted = src;
-                        } else {
-                            tools.reverseCopyRecords(src, 0, dst, 0, n);
-                            sorted = dst;
-                        }
+                    } else if (plan.inputDescending) {                       
+                        tools.reverseCopyRecords(src, 0, dst, 0, n);
+                        sorted = dst;
                     } else if (sourceAlreadyFinal(plan, cfg)) {
                         sorted = src;
                     } else {
-                        if (IN_PLACE_MSD_SCATTER) {
-                            scattered.inPlaceScatterIntoMsdBuckets(src, n, plan, cfg);
-                        } else {
-                            scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
-                        }
+                        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
                     }
 
-                    MemorySegment lsdScratch = src;
-                    if (!plan.inputAscending && !plan.inputDescending &&
-                            IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(plan, cfg)) {
-                        lsdScratch = arena.allocate(bytes, alignment);
-                    }
+                    MemorySegment lsdScratch = src;                   
 
                     if (!plan.inputAscending && !plan.inputDescending && planNeedsRefinement(plan, cfg)) {
                         lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, plan, cfg);
@@ -1075,5 +1038,32 @@ public class Apex {
         }
 
         return out;
+    }
+    
+    public static void sort(MemorySegment src, MemorySegment dst, long n, Config cfg) throws Exception {
+        if (n <= 1) return;
+
+        int order = tools.detectMonotonicOrder(src, n);
+        if (order == tools.ORDER_ASCENDING) return;
+        if (order == tools.ORDER_DESCENDING) {
+            tools.reverseRecordsInPlace(src, 0L, n);
+            return;
+        }
+
+        if (n <= 15_000_000L) {
+            Config rawCacheCfg = new Config(12, 13, 128); 
+            MsdBucketPlan rawPlan = msdbucketplan.buildMsdBucketPlan(
+                histogram.buildhistogram.buildMsdHistograms(src, n, rawCacheCfg, 52), 
+                n, rawCacheCfg, 52
+            );
+            
+            scattered.scatterIntoMsdBuckets(src, dst, n, rawPlan, rawCacheCfg);
+            lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, rawPlan, rawCacheCfg);
+            return;
+        }
+
+        MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
+        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
+        lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, plan, cfg);
     }
 }
