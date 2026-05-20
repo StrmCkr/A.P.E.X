@@ -141,11 +141,30 @@ public class tuples {
 
 	        long base = startPos << 4;
 	        long p = base;
+	        boolean ascending = true;
+	        boolean descending = true;
+	        long previous = 0L;
 
 	        for (int i = 0; i < size; i++) {
-	            sc.k1[i] = dst.get(Apex.LONG, p);
+	            long key = dst.get(Apex.LONG, p);
+	            sc.k1[i] = key;
 	            sc.v1[i] = dst.get(Apex.LONG, p + 8);
+	            if ((ascending || descending) && i > 0) {
+	                int cmp = Long.compareUnsigned(previous, key);
+	                ascending &= cmp <= 0;
+	                descending &= cmp >= 0;
+	            }
+	            previous = key;
 	            p += Apex.RECORD_BYTES;
+	        }
+
+	        if (ascending) {
+	            return;
+	        }
+
+	        if (descending) {
+	            tools.reverseRecordsInPlace(dst, base, size);
+	            return;
 	        }
 
 	        tupleCountingPass(sc.k1, sc.v1, sc.k2, sc.v2, size, sc, entropyMask, smallTuplePlan);

@@ -305,11 +305,30 @@ public class lsdbucketplan {
 	        long[] nextValues = sc.v2;
 
 	        long p = base;
+	        boolean ascending = true;
+	        boolean descending = true;
+	        long previous = 0L;
 
 	        for (int i = 0; i < size; i++) {
-	            currentKeys[i] = dst.get(Apex.LONG, p);
+	            long key = dst.get(Apex.LONG, p);
+	            currentKeys[i] = key;
 	            currentValues[i] = dst.get(Apex.LONG, p + 8);
+	            if ((ascending || descending) && i > 0) {
+	                int cmp = Long.compareUnsigned(previous, key);
+	                ascending &= cmp <= 0;
+	                descending &= cmp >= 0;
+	            }
+	            previous = key;
 	            p += Apex.RECORD_BYTES;
+	        }
+
+	        if (ascending) {
+	            return;
+	        }
+
+	        if (descending) {
+	            tools.reverseRecordsInPlace(dst, base, size);
+	            return;
 	        }
 
 	        for (int cycle = 0; cycle < cycles; cycle++) {

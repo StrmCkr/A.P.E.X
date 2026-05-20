@@ -24,6 +24,8 @@ public class msdbucketplan {
 	        public      final byte[] bucketFlags;
 	        public     final int msdShift;
 	        public     final long totalRecords;
+	        public     boolean inputAscending;
+	        public     boolean inputDescending;
 	        public     boolean hasLocalMsd;
 	        public     final int[] localMsdShifts;
 	        public     final long[][] localStarts;
@@ -74,6 +76,8 @@ public class msdbucketplan {
 	            int msdShift
 	    ) {
 	        MsdBucketPlan plan = new MsdBucketPlan(cfg, msdShift, n);
+	        plan.inputAscending = globallyMonotonic(result, true);
+	        plan.inputDescending = globallyMonotonic(result, false);
 
 	        long pos = 0;
 	        long lowerKeyMask = tools.lowBitsMask(msdShift);
@@ -231,6 +235,37 @@ public class msdbucketplan {
 	            }
 	        }
 	        return max;    }
+
+	  static boolean globallyMonotonic(HistogramResult result, boolean ascending) {
+	        boolean sawAny = false;
+	        long previousLast = 0L;
+
+	        for (int t = 0; t < Apex.THREADS; t++) {
+	            if (!result.sawKeys[t]) {
+	                continue;
+	            }
+
+	            if (ascending) {
+	                if (!result.ascending[t]) {
+	                    return false;
+	                }
+	            } else if (!result.descending[t]) {
+	                return false;
+	            }
+
+	            if (sawAny) {
+	                int cmp = Long.compareUnsigned(previousLast, result.firstKeys[t]);
+	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
+	                    return false;
+	                }
+	            }
+
+	            previousLast = result.lastKeys[t];
+	            sawAny = true;
+	        }
+
+	        return true;
+	    }
 
 	  static void attachLocalMsdPlans(MemorySegment src, long n, Config cfg, MsdBucketPlan plan) throws Exception {
 	        if (!Apex.LOCAL_MSD_REPARTITION) {

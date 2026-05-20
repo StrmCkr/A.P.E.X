@@ -21,12 +21,13 @@ import config.configurations.Config;
 import config.runoptions;
 import config.runoptions.Options;
 import generator.DataMode;
+import generator.DataTopology;
 import generator.initiatedata;
 import scatter.scattered;
 
 
 /*
- * Apex : Adaptive Parallel Entropic Dispatch 
+ * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
  *
  * High-performance entropy-adaptive radix sorting for large-scale 64-bit
  * key/value datasets on modern multi-core processors.
@@ -77,7 +78,7 @@ import scatter.scattered;
  *
  *   These analyses allow Apex to:
  *     - skip entropy-free radix passes
- *     - dynamically suppress refinement amplification and partition fanout
+ *     - avoid pathological partition fanout
  *     - reduce tiny partition explosion
  *     - improve cache locality and partition balance
  *     - dynamically relocate MSD extraction windows
@@ -173,7 +174,7 @@ public class Apex {
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;
-   public static final long DEFAULT_RECORDS = 500_000_000L;
+   public static final long DEFAULT_RECORDS = 100_000_000L;
    public static final long TUNE_RECORDS = 10_000_000L;
    public static final long WARMUP_RECORDS = 100_000_000L;
    public static int MAX_HEAP_SCRATCH_RECORDS = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
@@ -205,8 +206,6 @@ public class Apex {
    public  static final byte BUCKET_EMPTY = 0;
    public  static final byte BUCKET_ALL_EQUAL = 1;
    public  static final byte BUCKET_MIXED = 2;
-   public static final byte BUCKET_SORTED_ASC   = 3;
-   public static final byte BUCKET_SORTED_DESC  = 4;
      
 
     public static class Scratch {
@@ -360,7 +359,7 @@ public class Apex {
             Options options
     ) throws Exception {
         System.out.println("Records: " + records);
-        System.out.println("Data mode: " + mode);
+        DataTopology.printTopology(mode);
         System.out.println("Config: " + cfg);
         if (IN_PLACE_MSD_SCATTER) {
             System.out.printf("Data buffers: %.2f GiB (single data buffer; optional LSD scratch)%n",
@@ -386,44 +385,61 @@ public class Apex {
             initiatedata.initData(src, records, mode);
 
             Timer total = Timer.start();
+            MemorySegment sorted = tryInputOrderFastPath(src, dst, records, true);
 
-            Timer t0 = Timer.start();
-            MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
-            report("MSD adaptive plan", records, t0);
-            printMsdBucketStats(msdPlan, cfg);
+            if (sorted == null) {
+                Timer t0 = Timer.start();
+                MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
+                report("MSD adaptive plan", records, t0);
+                printMsdBucketStats(msdPlan, cfg);
 
-            MemorySegment sorted = dst;
-            if (sourceAlreadyFinal(msdPlan, cfg)) {
-                sorted = src;
-                System.out.println("MSD scatter skipped (source already final)");
-            } else {
-                t0 = Timer.start();
-                if (IN_PLACE_MSD_SCATTER) {
-                    scattered.inPlaceScatterIntoMsdBuckets(src, records, msdPlan, cfg);
+                sorted = dst;
+                if (msdPlan.inputAscending) {
+                    sorted = src;
+                    System.out.println("MSD/LSD skipped (input already ascending)");
+                } else if (msdPlan.inputDescending) {
+                    t0 = Timer.start();
+                    if (IN_PLACE_MSD_SCATTER) {
+                        tools.reverseRecordsInPlace(src, 0, records);
+                        sorted = src;
+                    } else {
+                        tools.reverseCopyRecords(src, 0, dst, 0, records);
+                        sorted = dst;
+                    }
+                    report("Descending reverse", records, t0);
+                } else if (sourceAlreadyFinal(msdPlan, cfg)) {
+                    sorted = src;
+                    System.out.println("MSD scatter skipped (source already final)");
                 } else {
-                    scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                    t0 = Timer.start();
+                    if (IN_PLACE_MSD_SCATTER) {
+                        scattered.inPlaceScatterIntoMsdBuckets(src, records, msdPlan, cfg);
+                    } else {
+                        scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                    }
+                    report("MSD scatter", records, t0);
                 }
-                report("MSD scatter", records, t0);
-            }
 
-            MemorySegment lsdScratch = src;
-            if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
-                lsdScratch = arena.allocate(bytes, alignment);
-                System.out.printf("LSD scratch: %.2f GiB (needed for off-heap refinements)%n",
-                        singleDataBufferGiB(records));
-            }
+                MemorySegment lsdScratch = src;
+                if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
+                        IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
+                    lsdScratch = arena.allocate(bytes, alignment);
+                    System.out.printf("LSD scratch: %.2f GiB (needed for off-heap refinements)%n",
+                            singleDataBufferGiB(records));
+                }
 
-            if (planNeedsRefinement(msdPlan, cfg)) {
-                t0 = Timer.start();
-                lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
-                report("Bucket refinement", records, t0);
-            } else {
-                System.out.println("Bucket refinement skipped");
+                if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
+                    t0 = Timer.start();
+                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+                    report("Bucket refinement", records, t0);
+                } else if (!msdPlan.inputAscending && !msdPlan.inputDescending) {
+                    System.out.println("Bucket refinement skipped");
+                }
             }
 
             report("TOTAL", records, total);
 
-            verifier.verifyLight(sorted, records, mode);
+            verifier.verify(sorted, records, mode);
         }
     } 
 
@@ -573,6 +589,46 @@ public class Apex {
         return estimate < heapMax / 3;
     }
 
+    public static MemorySegment tryInputOrderFastPath(
+            MemorySegment src,
+            MemorySegment dst,
+            long records,
+            boolean announce
+    ) throws Exception {
+        Timer scan = announce ? Timer.start() : null;
+        int order = tools.detectMonotonicOrder(src, records);
+
+        if (announce) {
+            report("Input order scan", records, scan);
+        }
+
+        if (order == tools.ORDER_MIXED) {
+            return null;
+        }
+
+        if (order == tools.ORDER_ASCENDING) {
+            if (announce) {
+                System.out.println("MSD plan/scatter/LSD skipped (input already ascending)");
+            }
+            return src;
+        }
+
+        Timer reverse = announce ? Timer.start() : null;
+        if (IN_PLACE_MSD_SCATTER) {
+            tools.reverseRecordsInPlace(src, 0, records);
+            if (announce) {
+                report("Descending reverse", records, reverse);
+            }
+            return src;
+        }
+
+        tools.reverseCopyRecords(src, 0, dst, 0, records);
+        if (announce) {
+            report("Descending reverse", records, reverse);
+        }
+        return dst;
+    }
+
     static double benchmarkCandidate(
             Config cfg,
             long testN,
@@ -588,37 +644,52 @@ public class Apex {
             initiatedata.initData(src, testN, mode);
 
             long start = System.nanoTime();
-            MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, testN, cfg);
+            MemorySegment sorted = tryInputOrderFastPath(src, dst, testN, false);
 
-            MemorySegment sorted = dst;
-            if (sourceAlreadyFinal(msdPlan, cfg)) {
-                sorted = src;
-            } else {
-                if (IN_PLACE_MSD_SCATTER) {
-                    scattered.inPlaceScatterIntoMsdBuckets(src, testN, msdPlan, cfg);
+            if (sorted == null) {
+                MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, testN, cfg);
+
+                sorted = dst;
+                if (msdPlan.inputAscending) {
+                    sorted = src;
+                } else if (msdPlan.inputDescending) {
+                    if (IN_PLACE_MSD_SCATTER) {
+                        tools.reverseRecordsInPlace(src, 0, testN);
+                        sorted = src;
+                    } else {
+                        tools.reverseCopyRecords(src, 0, dst, 0, testN);
+                        sorted = dst;
+                    }
+                } else if (sourceAlreadyFinal(msdPlan, cfg)) {
+                    sorted = src;
                 } else {
-                    scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
+                    if (IN_PLACE_MSD_SCATTER) {
+                        scattered.inPlaceScatterIntoMsdBuckets(src, testN, msdPlan, cfg);
+                    } else {
+                        scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
+                    }
                 }
-            }
 
-            MemorySegment lsdScratch = src;
-            if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
-                lsdScratch = arena.allocate(bytes, alignment);
-            }
+                MemorySegment lsdScratch = src;
+                if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
+                        IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
+                    lsdScratch = arena.allocate(bytes, alignment);
+                }
 
-            if (planNeedsRefinement(msdPlan, cfg)) {
-                lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+                if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
+                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+                }
             }
 
             double sec = elapsed(start);
 
-            verifier.verifyLight(sorted, testN, mode, announceVerify);
+            verifier.verify(sorted, testN, mode, announceVerify);
 
             return sec;
         }
     }
 
-    static boolean sourceAlreadyFinal(MsdBucketPlan plan, Config cfg) {
+    public static boolean sourceAlreadyFinal(MsdBucketPlan plan, Config cfg) {
         int nonEmpty = 0;
 
         for (int b = 0; b < cfg.msdBucketCount; b++) {
@@ -635,7 +706,7 @@ public class Apex {
         return true;
     }
 
-    static boolean planNeedsRefinement(MsdBucketPlan plan, Config cfg) {
+    public static boolean planNeedsRefinement(MsdBucketPlan plan, Config cfg) {
         for (int b = 0; b < cfg.msdBucketCount; b++) {
             if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
                 return true;
@@ -645,7 +716,7 @@ public class Apex {
         return false;
     }
 
-    static boolean planNeedsOffHeapScratch(MsdBucketPlan plan, Config cfg) {
+    public static boolean planNeedsOffHeapScratch(MsdBucketPlan plan, Config cfg) {
         for (int b = 0; b < cfg.msdBucketCount; b++) {
             if (!lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
                 continue;
@@ -895,29 +966,44 @@ public class Apex {
 
                 initiatedata.initData(src, n, mode);
 
-                MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
+                MemorySegment sorted = tryInputOrderFastPath(src, dst, n, false);
 
-                MemorySegment sorted = dst;
-                if (sourceAlreadyFinal(plan, cfg)) {
-                    sorted = src;
-                } else {
-                    if (IN_PLACE_MSD_SCATTER) {
-                        scattered.inPlaceScatterIntoMsdBuckets(src, n, plan, cfg);
+                if (sorted == null) {
+                    MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
+
+                    sorted = dst;
+                    if (plan.inputAscending) {
+                        sorted = src;
+                    } else if (plan.inputDescending) {
+                        if (IN_PLACE_MSD_SCATTER) {
+                            tools.reverseRecordsInPlace(src, 0, n);
+                            sorted = src;
+                        } else {
+                            tools.reverseCopyRecords(src, 0, dst, 0, n);
+                            sorted = dst;
+                        }
+                    } else if (sourceAlreadyFinal(plan, cfg)) {
+                        sorted = src;
                     } else {
-                        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
+                        if (IN_PLACE_MSD_SCATTER) {
+                            scattered.inPlaceScatterIntoMsdBuckets(src, n, plan, cfg);
+                        } else {
+                            scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
+                        }
+                    }
+
+                    MemorySegment lsdScratch = src;
+                    if (!plan.inputAscending && !plan.inputDescending &&
+                            IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(plan, cfg)) {
+                        lsdScratch = arena.allocate(bytes, alignment);
+                    }
+
+                    if (!plan.inputAscending && !plan.inputDescending && planNeedsRefinement(plan, cfg)) {
+                        lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, plan, cfg);
                     }
                 }
 
-                MemorySegment lsdScratch = src;
-                if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(plan, cfg)) {
-                    lsdScratch = arena.allocate(bytes, alignment);
-                }
-
-                if (planNeedsRefinement(plan, cfg)) {
-                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, plan, cfg);
-                }
-
-                verifier.verifyLight(sorted, n, mode);
+                verifier.verify(sorted, n, mode);
             }
 
             double sec = (System.nanoTime() - startAll) / 1e9;
