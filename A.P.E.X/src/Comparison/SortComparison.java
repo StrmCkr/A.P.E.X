@@ -414,6 +414,7 @@ public final class SortComparison {
         add(available, new KeyBenchmark(new AmericanFlagUnsigned()));
         add(available, new KeyBenchmark(new SampleSortUnsigned()));
         add(available, new KeyBenchmark(new BitonicUnsigned()));
+      
 
         String normalized = spec.trim().toLowerCase(Locale.ROOT);
         String[] recordNames = new String[] {
@@ -435,6 +436,7 @@ public final class SortComparison {
                         "american-flag",
                         "samplesort",
                         "bitonic"
+                      
                 };
         String[] keyNames = new String[] {
                         "jdk-arrays-sort",
@@ -484,6 +486,9 @@ public final class SortComparison {
         System.arraycopy(second, 0, out, first.length, second.length);
         return out;
     }
+   
+    
+    
     
     static final class AmericanFlagUnsigned implements Sorter {
         static final int BITS = 8;
