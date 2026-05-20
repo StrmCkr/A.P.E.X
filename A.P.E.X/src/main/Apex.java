@@ -26,7 +26,7 @@ import scatter.scattered;
 
 
 /*
- * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
+ * Apex : Adaptive Parallel Entropic Dispatch 
  *
  * High-performance entropy-adaptive radix sorting for large-scale 64-bit
  * key/value datasets on modern multi-core processors.
@@ -77,7 +77,7 @@ import scatter.scattered;
  *
  *   These analyses allow Apex to:
  *     - skip entropy-free radix passes
- *     - avoid pathological partition fanout
+ *     - dynamically suppress refinement amplification and partition fanout
  *     - reduce tiny partition explosion
  *     - improve cache locality and partition balance
  *     - dynamically relocate MSD extraction windows
@@ -153,7 +153,11 @@ import scatter.scattered;
  *   threads       Worker thread count. auto uses available processors.
  *   largePermits  Concurrent off-heap large partitions. auto uses max(1, threads/8).
  *   workStealing  Dynamic largest-first LSD bucket scheduling. true by default.
- *   tuplePacking  Packs sparse entropy coordinates into LSD passes. false by default.
+ *   workBatch     Work items claimed per shared queue hit.
+ *   inPlaceMsd    Experimental one-buffer MSD scatter.
+ *   inPlaceTile   Records read per in-place scatter tile.
+ *   tuplePacking  Forces packed sparse entropy cycles. Auto-packing still runs
+ *                 when it reduces cycle count.
  *   heapScratch   Max heap-backed scratch records per worker before off-heap path.
  *   tuneRecords   Record count used during the single auto-tune pass.
  *   warmupRecords Selected-config warmup record count.
@@ -176,12 +180,24 @@ public class Apex {
    public static final int TUNE_WARMUPS = 1;
    public  static final int TUNE_RUNS = 3;
    public static final int MAX_DIRECT_TUPLE_BITS = 16;
-   public static final int SMALL_TUPLE_LOOKUP_BITS = 5;
+   public static final int SMALL_TUPLE_LOOKUP_BITS = 10;
 
    public    static ExecutorService POOL;
    public  static boolean LSD_WORK_STEALING = true;
    public  static boolean PACKED_TUPLE_CYCLES = Boolean.getBoolean("apex.tuplePacking");
+   public  static boolean LOCAL_MSD_REPARTITION = Boolean.parseBoolean(
+           System.getProperty("apex.localMsd", "true")
+   );
    public  static int DIRECT_TUPLE_BITS = Integer.getInteger("apex.tupleBits", 9);
+   public  static int LOCAL_MSD_MIN_RECORDS = Integer.getInteger("apex.localMsdMinRecords", 1_048_576);
+   public  static int LOCAL_MSD_MIN_PASSES = Integer.getInteger("apex.localMsdMinPasses", 2);
+   public  static int LOCAL_MSD_MIN_WINDOW_BITS = Integer.getInteger("apex.localMsdMinWindowBits", 2);
+   public  static int LOCAL_MSD_MIN_SHARE_DIVISOR = Integer.getInteger("apex.localMsdMinShareDivisor", 8);
+   public  static int WORK_STEAL_BATCH = Integer.getInteger("apex.workBatch", 4);
+   public  static boolean IN_PLACE_MSD_SCATTER = Boolean.parseBoolean(
+           System.getProperty("apex.inPlaceMsd", "false")
+   );
+   public  static int IN_PLACE_TILE_RECORDS = Integer.getInteger("apex.inPlaceTileRecords", 64);
    public static int LARGE_PARTITION_PERMIT_COUNT = 1;
    public static Semaphore LARGE_PARTITION_PERMITS = new Semaphore(1);
    public static final ValueLayout.OfLong LONG = ValueLayout.JAVA_LONG_UNALIGNED;
@@ -189,6 +205,8 @@ public class Apex {
    public  static final byte BUCKET_EMPTY = 0;
    public  static final byte BUCKET_ALL_EQUAL = 1;
    public  static final byte BUCKET_MIXED = 2;
+   public static final byte BUCKET_SORTED_ASC   = 3;
+   public static final byte BUCKET_SORTED_DESC  = 4;
      
 
     public static class Scratch {
@@ -197,6 +215,15 @@ public class Apex {
         public long[] k2 = new long[1024];
         public  long[] v2 = new long[1024];
         public int[] counts;
+        public int[] bucketStarts = new int[0];
+        public int[] bucketOffsets = new int[0];
+        public int[] bucketEnds = new int[0];
+        public long[] bucketOrMasks = new long[0];
+        public long[] bucketAndMasks = new long[0];
+        public final int[] cycleShifts = new int[64];
+        public final int[] cycleMasks = new int[64];
+        public final long[] cycleBitMasks = new long[64];
+        public final long[] cycleTuplePlans = new long[64];
 
         public Scratch(int lsdRadix) {
             counts = new int[lsdRadix];
@@ -219,6 +246,18 @@ public class Apex {
                 counts = new int[n];
             }
         }
+
+        public void ensureBucketScratch(int n) {
+            if (bucketStarts.length >= n) {
+                return;
+            }
+
+            bucketStarts = new int[n];
+            bucketOffsets = new int[n];
+            bucketEnds = new int[n];
+            bucketOrMasks = new long[n];
+            bucketAndMasks = new long[n];
+        }
     }
   
 
@@ -227,7 +266,10 @@ public class Apex {
 
         THREADS = options.threads;
         LSD_WORK_STEALING = options.lsdWorkStealing;
+        WORK_STEAL_BATCH = options.workStealBatch;
         PACKED_TUPLE_CYCLES = options.packedTupleCycles;
+        IN_PLACE_MSD_SCATTER = options.inPlaceMsdScatter;
+        IN_PLACE_TILE_RECORDS = options.inPlaceTileRecords;
         DIRECT_TUPLE_BITS = options.directTupleBits;
         MAX_HEAP_SCRATCH_RECORDS = options.heapScratchRecords;
         tools.configureLargePartitionPermits(options);
@@ -244,8 +286,17 @@ public class Apex {
             System.out.println("Threads: " + THREADS);
             System.out.println("Large partition permits: " + LARGE_PARTITION_PERMIT_COUNT);
             System.out.println("LSD work stealing: " + LSD_WORK_STEALING);
-            System.out.println("Packed tuple cycles: " + PACKED_TUPLE_CYCLES);
+            System.out.println("Work steal batch: " + WORK_STEAL_BATCH);
+            System.out.println("MSD scatter mode: " +
+                    (IN_PLACE_MSD_SCATTER ? "in-place tile=" + IN_PLACE_TILE_RECORDS : "src->dst"));
+            System.out.println("Packed tuple cycles: " + (PACKED_TUPLE_CYCLES ? "forced" : "auto"));
+            System.out.println("Local MSD repartition: " + LOCAL_MSD_REPARTITION +
+                    " minRecords=" + LOCAL_MSD_MIN_RECORDS +
+                    " minPasses=" + LOCAL_MSD_MIN_PASSES +
+                    " minWindowBits=" + LOCAL_MSD_MIN_WINDOW_BITS +
+                    " minShare=1/" + LOCAL_MSD_MIN_SHARE_DIVISOR);
             System.out.println("Direct tuple bits: " + DIRECT_TUPLE_BITS);
+            System.out.println("Small tuple lookup bits: 2.." + SMALL_TUPLE_LOOKUP_BITS);
             System.out.println("Heap scratch records: " + MAX_HEAP_SCRATCH_RECORDS);
             System.out.println("Tune records: " + options.tuneRecords);
             System.out.println("MSD range: " + options.minMsdBits + ".." + options.maxMsdBits);
@@ -311,8 +362,13 @@ public class Apex {
         System.out.println("Records: " + records);
         System.out.println("Data mode: " + mode);
         System.out.println("Config: " + cfg);
-        System.out.printf("Data buffers: %.2f GiB (src+dst; src reused as LSD scratch)%n",
-                dataBufferGiB(records));
+        if (IN_PLACE_MSD_SCATTER) {
+            System.out.printf("Data buffers: %.2f GiB (single data buffer; optional LSD scratch)%n",
+                    singleDataBufferGiB(records));
+        } else {
+            System.out.printf("Data buffers: %.2f GiB (src+dst; src reused as LSD scratch)%n",
+                    dataBufferGiB(records));
+        }
 
         if (records == 0 || mode == DataMode.EMPTY) {
             System.out.println("EMPTY dataset - nothing to do");
@@ -324,7 +380,7 @@ public class Apex {
         try (Arena arena = Arena.ofShared()) {
             long bytes = tools.bytesForRecords(records);
             MemorySegment src = arena.allocate(bytes, alignment);
-            MemorySegment dst = arena.allocate(bytes, alignment);
+            MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
 
             System.out.println("Initializing: " + records + " records");
             initiatedata.initData(src, records, mode);
@@ -336,17 +392,38 @@ public class Apex {
             report("MSD adaptive plan", records, t0);
             printMsdBucketStats(msdPlan, cfg);
 
-            t0 = Timer.start();
-            scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
-            report("MSD scatter", records, t0);
+            MemorySegment sorted = dst;
+            if (sourceAlreadyFinal(msdPlan, cfg)) {
+                sorted = src;
+                System.out.println("MSD scatter skipped (source already final)");
+            } else {
+                t0 = Timer.start();
+                if (IN_PLACE_MSD_SCATTER) {
+                    scattered.inPlaceScatterIntoMsdBuckets(src, records, msdPlan, cfg);
+                } else {
+                    scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                }
+                report("MSD scatter", records, t0);
+            }
 
-            t0 = Timer.start();
-            lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, msdPlan, cfg);
-            report("LSD radix partitions", records, t0);
+            MemorySegment lsdScratch = src;
+            if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
+                lsdScratch = arena.allocate(bytes, alignment);
+                System.out.printf("LSD scratch: %.2f GiB (needed for off-heap refinements)%n",
+                        singleDataBufferGiB(records));
+            }
+
+            if (planNeedsRefinement(msdPlan, cfg)) {
+                t0 = Timer.start();
+                lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+                report("Bucket refinement", records, t0);
+            } else {
+                System.out.println("Bucket refinement skipped");
+            }
 
             report("TOTAL", records, total);
 
-            verifier.verifyLight(dst, records, mode);
+            verifier.verifyLight(sorted, records, mode);
         }
     } 
 
@@ -357,6 +434,10 @@ public class Apex {
   
     static double dataBufferGiB(long records) {
         return (records * (double) RECORD_BYTES * 2.0) / (1024.0 * 1024.0 * 1024.0);
+    }
+
+    static double singleDataBufferGiB(long records) {
+        return (records * (double) RECORD_BYTES) / (1024.0 * 1024.0 * 1024.0);
     }
 
     static Config autoTune(long alignment, DataMode mode, long records, Options options) throws Exception {
@@ -483,7 +564,7 @@ public class Apex {
                 Long.BYTES +            // tuple-tail masks
                 Long.BYTES +            // tuple-tail plans
                 Integer.BYTES +         // cycle counts
-                3L * Long.BYTES         // cycle-plan references, approximate compressed/oop-safe
+                4L * Long.BYTES         // cycle-plan references, approximate compressed/oop-safe
         );
         long scratchBytes = (long) THREADS * MAX_HEAP_SCRATCH_RECORDS * 4L * Long.BYTES;
 
@@ -502,32 +583,128 @@ public class Apex {
         try (Arena arena = Arena.ofShared()) {
             long bytes = tools.bytesForRecords(testN);
             MemorySegment src = arena.allocate(bytes, alignment);
-            MemorySegment dst = arena.allocate(bytes, alignment);
+            MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
 
             initiatedata.initData(src, testN, mode);
 
             long start = System.nanoTime();
             MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, testN, cfg);
 
-            scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
-            lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, msdPlan, cfg);
+            MemorySegment sorted = dst;
+            if (sourceAlreadyFinal(msdPlan, cfg)) {
+                sorted = src;
+            } else {
+                if (IN_PLACE_MSD_SCATTER) {
+                    scattered.inPlaceScatterIntoMsdBuckets(src, testN, msdPlan, cfg);
+                } else {
+                    scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
+                }
+            }
+
+            MemorySegment lsdScratch = src;
+            if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(msdPlan, cfg)) {
+                lsdScratch = arena.allocate(bytes, alignment);
+            }
+
+            if (planNeedsRefinement(msdPlan, cfg)) {
+                lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+            }
 
             double sec = elapsed(start);
 
-            verifier.verifyLight(dst, testN, mode, announceVerify);
+            verifier.verifyLight(sorted, testN, mode, announceVerify);
 
             return sec;
         }
     }
 
+    static boolean sourceAlreadyFinal(MsdBucketPlan plan, Config cfg) {
+        int nonEmpty = 0;
+
+        for (int b = 0; b < cfg.msdBucketCount; b++) {
+            if (plan.sizes[b] == 0) {
+                continue;
+            }
+
+            nonEmpty++;
+            if (nonEmpty > 1 || lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static boolean planNeedsRefinement(MsdBucketPlan plan, Config cfg) {
+        for (int b = 0; b < cfg.msdBucketCount; b++) {
+            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static boolean planNeedsOffHeapScratch(MsdBucketPlan plan, Config cfg) {
+        for (int b = 0; b < cfg.msdBucketCount; b++) {
+            if (!lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+                continue;
+            }
+
+            int localMsdShift = plan.localMsdShifts[b];
+            if (localMsdShift >= 0) {
+                int[] childSizes = plan.localSizes[b];
+                long[] childVariableMasks = plan.localVariableMasks[b];
+
+                for (int child = 0; child < cfg.msdBucketCount; child++) {
+                    int childSize = childSizes[child];
+                    if (childSize <= MAX_HEAP_SCRATCH_RECORDS ||
+                            childSize < cfg.tinyPartitionThreshold ||
+                            childVariableMasks[child] == 0L) {
+                        continue;
+                    }
+
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (plan.sizes[b] > MAX_HEAP_SCRATCH_RECORDS &&
+                    plan.sizes[b] >= cfg.tinyPartitionThreshold &&
+                    (plan.cycleCounts[b] > 0 || plan.tupleTailMasks[b] != 0L)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
 
   static void printMsdBucketStats(MsdBucketPlan plan, Config cfg) {
         int nonEmpty = 0;
+        int empty = 0;
+        int allEqual = 0;
+        int mixed = 0;
         int max = 0;
         long total = 0;
-        int directTupleCandidates = 0;
-        int plannedTupleTails = 0;
-        int plannedTinySorts = 0;
+        int refinementBuckets = 0;
+        int tinySortBuckets = 0;
+        int directTupleBuckets = 0;
+        int lsdCycleBuckets = 0;
+        int tupleTailPasses = 0;
+        int localMsdBuckets = 0;
+        int offHeapRefinements = 0;
+        long lsdCyclePasses = 0;
+        long contiguousCyclePasses = 0;
+        long sparseCyclePasses = 0;
+        long smallTupleCyclePasses = 0;
+        int refinementWorkItems = 0;
+        int localMsdChildWorkItems = 0;
+        int[] tempCycleShifts = new int[64];
+        int[] tempCycleMasks = new int[64];
+        long[] tempCycleBitMasks = new long[64];
+        long[] tempCycleTuplePlans = new long[64];
 
         for (int i = 0; i < cfg.msdBucketCount; i++) {
             int s = plan.sizes[i];
@@ -537,29 +714,161 @@ public class Apex {
             if (s > max) {
                 max = s;
             }
-            if (plan.bucketFlags[i] == BUCKET_MIXED && tuples.tupleSpaceFitsDirectPass(plan.variableMasks[i])) {
-                directTupleCandidates++;
+
+            if (plan.bucketFlags[i] == BUCKET_EMPTY) {
+                empty++;
+            } else if (plan.bucketFlags[i] == BUCKET_ALL_EQUAL) {
+                allEqual++;
+            } else if (plan.bucketFlags[i] == BUCKET_MIXED) {
+                mixed++;
             }
-            if (plan.tupleTailMasks[i] != 0L) {
-                plannedTupleTails++;
+
+            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, i)) {
+                refinementBuckets++;
+
+                if (s < cfg.tinyPartitionThreshold) {
+                    refinementWorkItems++;
+                    tinySortBuckets++;
+                } else {
+                    int localMsdShift = plan.localMsdShifts[i];
+
+                    if (localMsdShift >= 0) {
+                        localMsdBuckets++;
+                        int[] childSizes = plan.localSizes[i];
+                        long[] childVariableMasks = plan.localVariableMasks[i];
+
+                        for (int child = 0; child < cfg.msdBucketCount; child++) {
+                            int childSize = childSizes[child];
+                            long childVariableMask = childVariableMasks[child];
+
+                            if (childSize <= 1 || childVariableMask == 0L) {
+                                continue;
+                            }
+
+                            refinementWorkItems++;
+                            localMsdChildWorkItems++;
+
+                            if (childSize < cfg.tinyPartitionThreshold) {
+                                tinySortBuckets++;
+                                continue;
+                            }
+
+                            if (childSize > MAX_HEAP_SCRATCH_RECORDS) {
+                                offHeapRefinements++;
+                            }
+
+                            if (tuples.tupleSpaceFitsDirectPass(childVariableMask, childSize)) {
+                                directTupleBuckets++;
+                                continue;
+                            }
+
+                            int cycles = lsdbucketplan.buildLsdCyclePlan(
+                                    childVariableMask,
+                                    cfg,
+                                    localMsdShift,
+                                    tempCycleShifts,
+                                    tempCycleMasks,
+                                    tempCycleBitMasks,
+                                    tempCycleTuplePlans
+                            );
+                            int plannedCycles = tuples.plannedCyclePrefixBeforeTupleTail(
+                                    childVariableMask,
+                                    tempCycleBitMasks,
+                                    cycles,
+                                    childSize
+                            );
+                            long tupleTailMask = tuples.tupleTailMaskAfterPrefix(
+                                    childVariableMask,
+                                    tempCycleBitMasks,
+                                    plannedCycles,
+                                    childSize
+                            );
+
+                            if (plannedCycles > 0) {
+                                lsdCycleBuckets++;
+                                lsdCyclePasses += plannedCycles;
+
+                                for (int cycle = 0; cycle < plannedCycles; cycle++) {
+                                    if (tempCycleShifts[cycle] >= 0) {
+                                        contiguousCyclePasses++;
+                                    } else {
+                                        sparseCyclePasses++;
+                                    }
+
+                                    if (tempCycleTuplePlans[cycle] != 0L) {
+                                        smallTupleCyclePasses++;
+                                    }
+                                }
+                            }
+
+                            if (plannedCycles > 0 && tupleTailMask != 0L) {
+                                tupleTailPasses++;
+                            }
+	                        }
+
+	                        total += s;
+	                        continue;
+	                    }
+
+                    if (s > MAX_HEAP_SCRATCH_RECORDS) {
+                        offHeapRefinements++;
+                    }
+
+                    refinementWorkItems++;
+
+                    int cycles = plan.cycleCounts[i];
+                    if (cycles == 0 && plan.tupleTailMasks[i] != 0L) {
+                        directTupleBuckets++;
+                    } else {
+                        if (cycles > 0) {
+                            lsdCycleBuckets++;
+                            lsdCyclePasses += cycles;
+
+                            int[] shifts = plan.cycleShifts[i];
+                            long[] tuplePlans = plan.cycleTuplePlans[i];
+
+                            for (int cycle = 0; cycle < cycles; cycle++) {
+                                if (shifts[cycle] >= 0) {
+                                    contiguousCyclePasses++;
+                                } else {
+                                    sparseCyclePasses++;
+                                }
+
+                                if (tuplePlans != null && tuplePlans[cycle] != 0L) {
+                                    smallTupleCyclePasses++;
+                                }
+                            }
+                        }
+
+                        if (cycles > 0 && plan.tupleTailMasks[i] != 0L) {
+                            tupleTailPasses++;
+                        }
+                    }
+                }
             }
-            if (plan.bucketFlags[i] == BUCKET_MIXED &&
-                    s > 1 &&
-                    s < cfg.tinyPartitionThreshold &&
-                    plan.cycleCounts[i] == 0 &&
-                    plan.tupleTailMasks[i] == 0L) {
-                plannedTinySorts++;
-            }
+
             total += s;
         }
 
         System.out.println("MSD buckets non-empty: " + nonEmpty + " / " + cfg.msdBucketCount);
+        System.out.println("MSD bucket states: mixed=" + mixed +
+                " all-equal=" + allEqual + " empty=" + empty);
         System.out.println("MSD bucket shift: " + plan.msdShift +
                 " (bits " + plan.msdShift + ".." + (plan.msdShift + cfg.msdBits - 1) + ")");
         System.out.println("Largest MSD bucket: " + max);
-        System.out.println("Direct tuple candidates: " + directTupleCandidates);
-        System.out.println("Planned tiny sorts: " + plannedTinySorts);
-        System.out.println("Planned tuple tails: " + plannedTupleTails);
+        System.out.println("Top MSD buckets needing refinement: " + refinementBuckets);
+        System.out.println("Refinement work items: " + refinementWorkItems +
+                " (local-MSD children=" + localMsdChildWorkItems + ")");
+        System.out.println("Tiny-sort buckets: " + tinySortBuckets);
+        System.out.println("Direct tuple partitions: " + directTupleBuckets);
+        System.out.println("LSD cycle buckets: " + lsdCycleBuckets);
+        System.out.println("LSD cycle passes: " + lsdCyclePasses +
+                " (contiguous=" + contiguousCyclePasses +
+                " sparse=" + sparseCyclePasses +
+                " small-tuple=" + smallTupleCyclePasses + ")");
+        System.out.println("Tuple-tail passes: " + tupleTailPasses);
+        System.out.println("Local MSD repartition buckets: " + localMsdBuckets);
+        System.out.println("Off-heap refinements: " + offHeapRefinements);
         System.out.println("Total bucketed: " + total);
     }
 
@@ -582,17 +891,33 @@ public class Apex {
             try (Arena arena = Arena.ofShared()) {
                 long bytes = tools.bytesForRecords(n);
                 MemorySegment src = arena.allocate(bytes, alignment);
-                MemorySegment dst = arena.allocate(bytes, alignment);
+                MemorySegment dst = IN_PLACE_MSD_SCATTER ? src : arena.allocate(bytes, alignment);
 
                 initiatedata.initData(src, n, mode);
 
                 MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
 
-                scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
+                MemorySegment sorted = dst;
+                if (sourceAlreadyFinal(plan, cfg)) {
+                    sorted = src;
+                } else {
+                    if (IN_PLACE_MSD_SCATTER) {
+                        scattered.inPlaceScatterIntoMsdBuckets(src, n, plan, cfg);
+                    } else {
+                        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
+                    }
+                }
 
-                lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, plan, cfg);
+                MemorySegment lsdScratch = src;
+                if (IN_PLACE_MSD_SCATTER && planNeedsOffHeapScratch(plan, cfg)) {
+                    lsdScratch = arena.allocate(bytes, alignment);
+                }
 
-                verifier.verifyLight(dst, n, mode);
+                if (planNeedsRefinement(plan, cfg)) {
+                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, plan, cfg);
+                }
+
+                verifier.verifyLight(sorted, n, mode);
             }
 
             double sec = (System.nanoTime() - startAll) / 1e9;

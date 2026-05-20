@@ -15,7 +15,11 @@ public class tuples {
 
 	    public static boolean tupleSpaceFitsDirectPass(long entropyMask) {
 	        int tupleBits = Long.bitCount(entropyMask);
-	        return tupleBits > 0 && tupleBits <= Apex.DIRECT_TUPLE_BITS;
+	        return tupleBits > 1 && tupleBits <= Apex.DIRECT_TUPLE_BITS;
+	    }
+
+	    public static boolean tupleSpaceFitsDirectPass(long entropyMask, int size) {
+	        return tupleSpaceFitsDirectPass(entropyMask) && tupleRadix(entropyMask) <= size;
 	    }
 
 	    public static int tupleRadix(long entropyMask) {
@@ -25,12 +29,12 @@ public class tuples {
 	    public static long buildSmallTuplePlan(long entropyMask) {
 	        int tupleBits = Long.bitCount(entropyMask);
 
-	        if (tupleBits <= 0 || tupleBits > Apex.SMALL_TUPLE_LOOKUP_BITS) {
+	        if (tupleBits <= 1 || tupleBits > Apex.SMALL_TUPLE_LOOKUP_BITS) {
 	            return 0L;
 	        }
 
 	        long plan = tupleBits;
-	        int outShift = 3;
+	        int outShift = 4;
 
 	        while (entropyMask != 0L) {
 	            long bit = entropyMask & -entropyMask;
@@ -51,29 +55,48 @@ public class tuples {
 	    }
 
 	    public   static int smallTupleIndex(long key, long plan) {
-	        int tupleBits = (int) (plan & 7L);
+	        int tupleBits = (int) (plan & 15L);
 	        int tuple = 0;
 
 	        if (tupleBits >= 1) {
-	            tuple |= (int) ((key >>> ((plan >>> 3) & 63L)) & 1L);
+	            tuple |= (int) ((key >>> ((plan >>> 4) & 63L)) & 1L);
 	        }
 	        if (tupleBits >= 2) {
-	            tuple |= (int) ((key >>> ((plan >>> 9) & 63L)) & 1L) << 1;
+	            tuple |= (int) ((key >>> ((plan >>> 10) & 63L)) & 1L) << 1;
 	        }
 	        if (tupleBits >= 3) {
-	            tuple |= (int) ((key >>> ((plan >>> 15) & 63L)) & 1L) << 2;
+	            tuple |= (int) ((key >>> ((plan >>> 16) & 63L)) & 1L) << 2;
 	        }
 	        if (tupleBits >= 4) {
-	            tuple |= (int) ((key >>> ((plan >>> 21) & 63L)) & 1L) << 3;
+	            tuple |= (int) ((key >>> ((plan >>> 22) & 63L)) & 1L) << 3;
 	        }
 	        if (tupleBits >= 5) {
-	            tuple |= (int) ((key >>> ((plan >>> 27) & 63L)) & 1L) << 4;
+	            tuple |= (int) ((key >>> ((plan >>> 28) & 63L)) & 1L) << 4;
+	        }
+	        if (tupleBits >= 6) {
+	            tuple |= (int) ((key >>> ((plan >>> 34) & 63L)) & 1L) << 5;
+	        }
+	        if (tupleBits >= 7) {
+	            tuple |= (int) ((key >>> ((plan >>> 40) & 63L)) & 1L) << 6;
+	        }
+	        if (tupleBits >= 8) {
+	            tuple |= (int) ((key >>> ((plan >>> 46) & 63L)) & 1L) << 7;
+	        }
+	        if (tupleBits >= 9) {
+	            tuple |= (int) ((key >>> ((plan >>> 52) & 63L)) & 1L) << 8;
+	        }
+	        if (tupleBits >= 10) {
+	            tuple |= (int) ((key >>> ((plan >>> 58) & 63L)) & 1L) << 9;
 	        }
 	        
 	        return tuple;
 	    }
 	    
 	    public static long tupleTailMaskAfterPrefix(long variableMask, long[] cycleBitMasks, int prefix) {
+	        return tupleTailMaskAfterPrefix(variableMask, cycleBitMasks, prefix, Integer.MAX_VALUE);
+	    }
+
+	    public static long tupleTailMaskAfterPrefix(long variableMask, long[] cycleBitMasks, int prefix, int size) {
 	        long consumed = 0L;
 
 	        for (int i = 0; i < prefix; i++) {
@@ -81,7 +104,7 @@ public class tuples {
 	        }
 
 	        long tailMask = variableMask & ~consumed;
-	        return tupleSpaceFitsDirectPass(tailMask) ? tailMask : 0L;
+	        return tupleSpaceFitsDirectPass(tailMask, size) ? tailMask : 0L;
 	    }
 	    
 	    public static boolean tryDirectTupleSpaceSort(
@@ -93,7 +116,7 @@ public class tuples {
 	            long entropyMask,
 	            long smallTuplePlan
 	    ) {
-	        if (!tupleSpaceFitsDirectPass(entropyMask)) {
+	        if (!tupleSpaceFitsDirectPass(entropyMask, size)) {
 	            return false;
 	        }
 
@@ -174,7 +197,8 @@ public class tuples {
 	            Config cfg,
 	            int[] cycleShifts,
 	            int[] cycleMasks,
-	            long[] cycleBitMasks
+	            long[] cycleBitMasks,
+	            long[] cycleTuplePlans
 	    ) {
 	        int cycles = 0;
 	        int bitsInCycle = 0;
@@ -190,6 +214,7 @@ public class tuples {
 	                cycleBitMasks[cycles] = bitMask;
 	                cycleMasks[cycles] = tools.lowIntMask(bitsInCycle);
 	                cycleShifts[cycles] = contiguousShift(bitMask);
+	                cycleTuplePlans[cycles] = cycleShifts[cycles] < 0 ? buildSmallTuplePlan(bitMask) : 0L;
 	                cycles++;
 
 	                bitMask = 0L;
@@ -207,7 +232,11 @@ public class tuples {
 	    }
 
 	    public static int plannedCyclePrefixBeforeTupleTail(long variableMask, long[] cycleBitMasks, int cycles) {
-	        if (tupleSpaceFitsDirectPass(variableMask)) {
+	        return plannedCyclePrefixBeforeTupleTail(variableMask, cycleBitMasks, cycles, Integer.MAX_VALUE);
+	    }
+
+	    public static int plannedCyclePrefixBeforeTupleTail(long variableMask, long[] cycleBitMasks, int cycles, int size) {
+	        if (tupleSpaceFitsDirectPass(variableMask, size)) {
 	            return 0;
 	        }
 
@@ -216,7 +245,7 @@ public class tuples {
 	        for (int prefix = 1; prefix < cycles; prefix++) {
 	            consumed |= cycleBitMasks[prefix - 1];
 
-	            if (tupleSpaceFitsDirectPass(variableMask & ~consumed)) {
+	            if (tupleSpaceFitsDirectPass(variableMask & ~consumed, size)) {
 	                return prefix;
 	            }
 	        }
@@ -292,10 +321,28 @@ public class tuples {
 	        int radixThisPass = mask + 1;
 	        Arrays.fill(counts, 0, radixThisPass, 0);
 
-	        for (int i = 0; i < size; i++) {
-	            long k = source.get(Apex.LONG, sourceBase + ((long) i << 4));
-	            int bin = tools.digit(k, shift, mask, bitMask, smallTuplePlan);
-	            counts[bin]++;
+	        long p = sourceBase;
+	        long end = sourceBase + ((long) size << 4);
+	        long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
+
+	        while (p <= unrolledEnd) {
+	            long k0 = source.get(Apex.LONG, p);
+	            long k1 = source.get(Apex.LONG, p + 16);
+	            long k2 = source.get(Apex.LONG, p + 32);
+	            long k3 = source.get(Apex.LONG, p + 48);
+
+	            counts[tools.digit(k0, shift, mask, bitMask, smallTuplePlan)]++;
+	            counts[tools.digit(k1, shift, mask, bitMask, smallTuplePlan)]++;
+	            counts[tools.digit(k2, shift, mask, bitMask, smallTuplePlan)]++;
+	            counts[tools.digit(k3, shift, mask, bitMask, smallTuplePlan)]++;
+
+	            p += 4L * Apex.RECORD_BYTES;
+	        }
+
+	        while (p < end) {
+	            long k = source.get(Apex.LONG, p);
+	            counts[tools.digit(k, shift, mask, bitMask, smallTuplePlan)]++;
+	            p += Apex.RECORD_BYTES;
 	        }
 
 	        int sum = 0;
@@ -306,11 +353,44 @@ public class tuples {
 	            sum += c;
 	        }
 
-	        for (int i = 0; i < size; i++) {
-	            long sourcePos = sourceBase + ((long) i << 4);
+	        p = sourceBase;
 
-	            long k = source.get(Apex.LONG, sourcePos);
-	            long v = source.get(Apex.LONG, sourcePos + 8);
+	        while (p <= unrolledEnd) {
+	            long k0 = source.get(Apex.LONG, p);
+	            long v0 = source.get(Apex.LONG, p + 8);
+	            long k1 = source.get(Apex.LONG, p + 16);
+	            long v1 = source.get(Apex.LONG, p + 24);
+	            long k2 = source.get(Apex.LONG, p + 32);
+	            long v2 = source.get(Apex.LONG, p + 40);
+	            long k3 = source.get(Apex.LONG, p + 48);
+	            long v3 = source.get(Apex.LONG, p + 56);
+
+	            int bin0 = tools.digit(k0, shift, mask, bitMask, smallTuplePlan);
+	            long targetPos0 = targetBase + ((long) counts[bin0]++ << 4);
+	            target.set(Apex.LONG, targetPos0, k0);
+	            target.set(Apex.LONG, targetPos0 + 8, v0);
+
+	            int bin1 = tools.digit(k1, shift, mask, bitMask, smallTuplePlan);
+	            long targetPos1 = targetBase + ((long) counts[bin1]++ << 4);
+	            target.set(Apex.LONG, targetPos1, k1);
+	            target.set(Apex.LONG, targetPos1 + 8, v1);
+
+	            int bin2 = tools.digit(k2, shift, mask, bitMask, smallTuplePlan);
+	            long targetPos2 = targetBase + ((long) counts[bin2]++ << 4);
+	            target.set(Apex.LONG, targetPos2, k2);
+	            target.set(Apex.LONG, targetPos2 + 8, v2);
+
+	            int bin3 = tools.digit(k3, shift, mask, bitMask, smallTuplePlan);
+	            long targetPos3 = targetBase + ((long) counts[bin3]++ << 4);
+	            target.set(Apex.LONG, targetPos3, k3);
+	            target.set(Apex.LONG, targetPos3 + 8, v3);
+
+	            p += 4L * Apex.RECORD_BYTES;
+	        }
+
+	        while (p < end) {
+	            long k = source.get(Apex.LONG, p);
+	            long v = source.get(Apex.LONG, p + 8);
 
 	            int bin = tools.digit(k, shift, mask, bitMask, smallTuplePlan);
 
@@ -318,6 +398,7 @@ public class tuples {
 
 	            target.set(Apex.LONG, targetPos, k);
 	            target.set(Apex.LONG, targetPos + 8, v);
+	            p += Apex.RECORD_BYTES;
 	        }
 	    }
 	  

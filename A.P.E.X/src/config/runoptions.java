@@ -21,7 +21,10 @@ public class runoptions {
         public  int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
         public  int largePartitionPermits = 0;
         public  boolean lsdWorkStealing = true;
+        public  int workStealBatch = Integer.getInteger("apex.workBatch", 4);
         public  boolean packedTupleCycles = Boolean.getBoolean("apex.tuplePacking");
+        public  boolean inPlaceMsdScatter = Boolean.parseBoolean(System.getProperty("apex.inPlaceMsd", "false"));
+        public  int inPlaceTileRecords = Integer.getInteger("apex.inPlaceTileRecords", 64);
         public  int directTupleBits = Integer.getInteger("apex.tupleBits", 9);
         public  int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
         public  int minMsdBits = 12;
@@ -48,6 +51,14 @@ public class runoptions {
 
         if (options.heapScratchRecords <= 0) {
             throw new IllegalArgumentException("heapScratch must be positive");
+        }
+
+        if (options.workStealBatch <= 0) {
+            throw new IllegalArgumentException("workBatch must be positive");
+        }
+
+        if (options.inPlaceTileRecords <= 0) {
+            throw new IllegalArgumentException("inPlaceTileRecords must be positive");
         }
 
         validateBitRange("MSD", options.minMsdBits, options.maxMsdBits);
@@ -140,11 +151,27 @@ public class runoptions {
                 case "steal":
                     options.lsdWorkStealing = parseBoolean(value);
                     break;
+                case "workbatch":
+                case "stealbatch":
+                case "workstealbatch":
+                    options.workStealBatch = parsePositiveInt(value);
+                    break;
                 case "tuplepacking":
                 case "packedtuples":
                 case "tuplecycles":
                 case "tuples":
                     options.packedTupleCycles = parseBoolean(value);
+                    break;
+                case "inplace":
+                case "inplacemsd":
+                case "inplacescatter":
+                case "inplacemsdscatter":
+                    options.inPlaceMsdScatter = parseBoolean(value);
+                    break;
+                case "inplacetile":
+                case "inplacetiles":
+                case "inplacetilerecords":
+                    options.inPlaceTileRecords = parsePositiveInt(value);
                     break;
                 case "tuplebits":
                 case "tuplecap":

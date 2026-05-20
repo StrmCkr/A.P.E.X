@@ -8,6 +8,10 @@ import main.Apex.Scratch;
 public class tinysort {
 
 	public static void tinyPartitionBitSort(MemorySegment dst, long startPos, int size, Scratch sc) {
+	        if (size <= 1) {
+	            return;
+	        }
+
 	        sc.ensure(size);
 
 	        long base = startPos << 4;
@@ -70,9 +74,13 @@ public class tinysort {
 	                }
 	            }
 
-	            for (int j = i; j > lo; j--) {
-	                k[j] = k[j - 1];
-	                v[j] = v[j - 1];
+	            int moved = i - lo;
+	            if (moved == 1) {
+	                k[lo + 1] = k[lo];
+	                v[lo + 1] = v[lo];
+	            } else if (moved > 1) {
+	                System.arraycopy(k, lo, k, lo + 1, moved);
+	                System.arraycopy(v, lo, v, lo + 1, moved);
 	            }
 
 	            k[lo] = key;

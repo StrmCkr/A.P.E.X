@@ -12,6 +12,14 @@ import generator.DataMode;
 import main.Apex;
 
 public class tools {
+	  public static final long PARALLEL_COPY_MIN_RECORDS = Long.getLong(
+	            "apex.parallelCopyRecords",
+	            4_194_304L
+	    );
+	  public static final long COPY_SLICE_RECORDS = Long.getLong(
+	            "apex.copySliceRecords",
+	            4_194_304L
+	    );
 
 	  public static void waitForFutures(List<? extends Future<?>> futures) throws Exception {
 	        for (Future<?> future : futures) {
@@ -132,16 +140,7 @@ public class tools {
 	        return tuples.tupleIndex(key, bitMask, smallTuplePlan);
 	    }
 	
-	/*   public static void bulkCopyRecords(
-	            MemorySegment source,
-	            long sourceBase,
-	            MemorySegment target,
-	            long targetBase,
-	            int records
-	    ) {
-	        MemorySegment.copy(source, sourceBase, target, targetBase, tools.bytesForRecords(records));
-	    }*/
-	   
+	  
 	    public static void parallelBulkCopy(
 	            MemorySegment source,
 	            long sourceBase,
@@ -149,22 +148,62 @@ public class tools {
 	            long targetBase,
 	            long totalRecords
 	    ) throws Exception { // <--- Passes the exception up to the Apex orchestrator safely
-	        long recordsPerThread = totalRecords / Apex.THREADS;
-	        java.util.ArrayList<java.util.concurrent.Future<?>> loops = new java.util.ArrayList<>(Apex.THREADS);
+	        if (totalRecords <= 0 || (source == target && sourceBase == targetBase)) {
+	            return;
+	        }
 
-	        for (int t = 0; t < Apex.THREADS; t++) {
+	        long totalBytes = tools.bytesForRecords(totalRecords);
+	        if (Apex.POOL == null || Apex.THREADS <= 1 || totalRecords < PARALLEL_COPY_MIN_RECORDS) {
+	            MemorySegment.copy(source, sourceBase, target, targetBase, totalBytes);
+	            return;
+	        }
+
+	        long sliceRecords = Math.max(1L, COPY_SLICE_RECORDS);
+	        int copyTasks = (int) Math.min(
+	                (long) Apex.THREADS,
+	                Math.max(1L, (totalRecords + sliceRecords - 1L) / sliceRecords)
+	        );
+
+	        if (copyTasks <= 1) {
+	            MemorySegment.copy(source, sourceBase, target, targetBase, totalBytes);
+	            return;
+	        }
+
+	        long recordsPerTask = totalRecords / copyTasks;
+	        java.util.ArrayList<java.util.concurrent.Future<?>> loops =
+	                new java.util.ArrayList<>(copyTasks - 1);
+
+	        for (int t = 1; t < copyTasks; t++) {
 	            final int tid = t;
 	            loops.add(Apex.POOL.submit(() -> {
-	                long startRecord = tid * recordsPerThread;
-	                long count = (tid == Apex.THREADS - 1) ? (totalRecords - startRecord) : recordsPerThread;
-	                
-	                long offset = startRecord * Apex.RECORD_BYTES;
-	                MemorySegment.copy(source, sourceBase + offset, target, targetBase + offset, count * Apex.RECORD_BYTES);
+	                copyRecordSlice(source, sourceBase, target, targetBase, totalRecords, recordsPerTask, copyTasks, tid);
 	            }));
 	        }
+
+	        copyRecordSlice(source, sourceBase, target, targetBase, totalRecords, recordsPerTask, copyTasks, 0);
 	        
-	        // Fixes the issue: Safely unrolls and processes the futures using your existing tools engine
 	        Tools.tools.waitForFutures(loops); 
+	    }
+
+	    static void copyRecordSlice(
+	            MemorySegment source,
+	            long sourceBase,
+	            MemorySegment target,
+	            long targetBase,
+	            long totalRecords,
+	            long recordsPerTask,
+	            int copyTasks,
+	            int task
+	    ) {
+	        long startRecord = (long) task * recordsPerTask;
+	        long count = (task == copyTasks - 1) ? (totalRecords - startRecord) : recordsPerTask;
+
+	        if (count <= 0) {
+	            return;
+	        }
+
+	        long offset = startRecord * Apex.RECORD_BYTES;
+	        MemorySegment.copy(source, sourceBase + offset, target, targetBase + offset, count * Apex.RECORD_BYTES);
 	    }
 
 	 public static void configureLargePartitionPermits(Options options) {
@@ -173,7 +212,6 @@ public class tools {
 	                : Math.max(1, Apex.THREADS / 8);
 	        Apex.LARGE_PARTITION_PERMITS = new Semaphore(Apex.LARGE_PARTITION_PERMIT_COUNT);
 	    }
-
-	   
-	   
+	 
+		   
 }

@@ -23,6 +23,13 @@ public class msdbucketplan {
 		public       final int[][] threadScatterOffsets;
 	        public      final byte[] bucketFlags;
 	        public     final int msdShift;
+	        public     final long totalRecords;
+	        public     boolean hasLocalMsd;
+	        public     final int[] localMsdShifts;
+	        public     final long[][] localStarts;
+	        public     final int[][] localSizes;
+	        public     final long[][] localVariableMasks;
+	        public     final int[][][] localThreadScatterOffsets;
 
 	        public     final long[] variableMasks;
 
@@ -30,14 +37,21 @@ public class msdbucketplan {
 	        public        final int[][] cycleShifts;
 	        public     final int[][] cycleMasks;
 	        public    final long[][] cycleBitMasks;
+	        public    final long[][] cycleTuplePlans;
 	        public    final long[] tupleTailMasks;
 	        public   final long[] tupleTailPlans;
 
-	        public MsdBucketPlan(Config cfg, int msdShift) {
+	        public MsdBucketPlan(Config cfg, int msdShift, long totalRecords) {
 	            starts = new long[cfg.msdBucketCount];
 	            sizes = new int[cfg.msdBucketCount];
 	            threadScatterOffsets = new int[Apex.THREADS][cfg.msdBucketCount];
 	            bucketFlags = new byte[cfg.msdBucketCount];
+	            localMsdShifts = new int[cfg.msdBucketCount];
+	            localStarts = new long[cfg.msdBucketCount][];
+	            localSizes = new int[cfg.msdBucketCount][];
+	            localVariableMasks = new long[cfg.msdBucketCount][];
+	            localThreadScatterOffsets = new int[cfg.msdBucketCount][][];
+	            Arrays.fill(localMsdShifts, -1);
 
 	            variableMasks = new long[cfg.msdBucketCount];
 
@@ -45,10 +59,12 @@ public class msdbucketplan {
 	            cycleShifts = new int[cfg.msdBucketCount][];
 	            cycleMasks = new int[cfg.msdBucketCount][];
 	            cycleBitMasks = new long[cfg.msdBucketCount][];
+	            cycleTuplePlans = new long[cfg.msdBucketCount][];
 	            tupleTailMasks = new long[cfg.msdBucketCount];
 	            tupleTailPlans = new long[cfg.msdBucketCount];
 
 	            this.msdShift = msdShift;
+	            this.totalRecords = totalRecords;
 	        }
 	    }
 	   public static MsdBucketPlan buildMsdBucketPlan(
@@ -57,12 +73,14 @@ public class msdbucketplan {
 	            Config cfg,
 	            int msdShift
 	    ) {
-	        MsdBucketPlan plan = new MsdBucketPlan(cfg, msdShift);
+	        MsdBucketPlan plan = new MsdBucketPlan(cfg, msdShift, n);
 
 	        long pos = 0;
+	        long lowerKeyMask = tools.lowBitsMask(msdShift);
 	        int[] tempCycleShifts = new int[64];
 	        int[] tempCycleMasks = new int[64];
 	        long[] tempCycleBitMasks = new long[64];
+	        long[] tempCycleTuplePlans = new long[64];
 
 	        for (int b = 0; b < cfg.msdBucketCount; b++) {
 	            plan.starts[b] = pos;
@@ -94,14 +112,14 @@ public class msdbucketplan {
 	            int size = (int) bucketSize;
 	            pos += bucketSize;
 
-	            long variableMask = (bucketOr ^ bucketAnd) & tools.lowBitsMask(msdShift);
+	            long variableMask = size > 1 ? ((bucketOr ^ bucketAnd) & lowerKeyMask) : 0L;
 
 	            plan.variableMasks[b] = variableMask;
 	            plan.sizes[b] = size;
 
 	            if (!seenAny || size == 0) {
 	                plan.bucketFlags[b] = Apex.BUCKET_EMPTY;
-	            } else if (variableMask == 0L) {
+	            } else if (size == 1 || variableMask == 0L) {
 	                plan.bucketFlags[b] = Apex.BUCKET_ALL_EQUAL;
 	            } else {
 	                plan.bucketFlags[b] = Apex.BUCKET_MIXED;
@@ -112,7 +130,7 @@ public class msdbucketplan {
 	                    continue;
 	                }
 
-	                if (tuples.tupleSpaceFitsDirectPass(variableMask)) {
+	                if (tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
 	                    plan.tupleTailMasks[b] = variableMask;
 	                    plan.tupleTailPlans[b] = tuples.buildSmallTuplePlan(variableMask);
 	                } else {
@@ -122,7 +140,8 @@ public class msdbucketplan {
 	                            msdShift,
 	                            tempCycleShifts,
 	                            tempCycleMasks,
-	                            tempCycleBitMasks
+	                            tempCycleBitMasks,
+	                            tempCycleTuplePlans
 	                    );
 
 	                    if (cycles == 0) {
@@ -131,12 +150,14 @@ public class msdbucketplan {
 	                        int plannedCycles = tuples.plannedCyclePrefixBeforeTupleTail(
 	                                variableMask,
 	                                tempCycleBitMasks,
-	                                cycles
+	                                cycles,
+	                                size
 	                        );
 	                        long tupleTailMask = tuples.tupleTailMaskAfterPrefix(
 	                                variableMask,
 	                                tempCycleBitMasks,
-	                                plannedCycles
+	                                plannedCycles,
+	                                size
 	                        );
 
 	                        plan.cycleCounts[b] = plannedCycles;
@@ -147,6 +168,7 @@ public class msdbucketplan {
 	                            plan.cycleShifts[b] = Arrays.copyOf(tempCycleShifts, plannedCycles);
 	                            plan.cycleMasks[b] = Arrays.copyOf(tempCycleMasks, plannedCycles);
 	                            plan.cycleBitMasks[b] = Arrays.copyOf(tempCycleBitMasks, plannedCycles);
+	                            plan.cycleTuplePlans[b] = Arrays.copyOf(tempCycleTuplePlans, plannedCycles);
 	                        }
 	                    }
 	                }
@@ -166,6 +188,12 @@ public class msdbucketplan {
 	        MsdBucketPlan topPlan = buildMsdBucketPlan(topHist, n, cfg, topShift);
 
 	        if (largestBucketSize(topPlan, cfg) != n) {
+	            attachLocalMsdPlans(src, n, cfg, topPlan);
+	            return topPlan;
+	        }
+
+	        long variableMask = collapsedPlanVariableMask(topPlan, cfg);
+	        if (variableMask == 0L) {
 	            return topPlan;
 	        }
 
@@ -174,7 +202,11 @@ public class msdbucketplan {
 	                continue;
 	            }
 
-	            if (!prefixAboveWindowIsConstant(src, n, shift + cfg.msdBits)) {
+	            if (!prefixAboveWindowIsConstant(variableMask, shift + cfg.msdBits)) {
+	                continue;
+	            }
+
+	            if (shift != 0 && !windowContainsVariableBits(variableMask, shift, cfg.msdBits)) {
 	                continue;
 	            }
 
@@ -182,10 +214,12 @@ public class msdbucketplan {
 	            MsdBucketPlan plan = buildMsdBucketPlan(hist, n, cfg, shift);
 
 	            if (largestBucketSize(plan, cfg) != n || shift == 0) {
+	                attachLocalMsdPlans(src, n, cfg, plan);
 	                return plan;
 	            }
 	        }
 
+	        attachLocalMsdPlans(src, n, cfg, topPlan);
 	        return topPlan;
 	    }
 	  
@@ -197,14 +231,45 @@ public class msdbucketplan {
 	            }
 	        }
 	        return max;    }
-	  
-	  public static boolean prefixAboveWindowIsConstant(MemorySegment src, long n, int firstVariableBit) throws Exception {
-	        if (firstVariableBit >= 64 || n <= 1) {
-	            return true;
+
+	  static void attachLocalMsdPlans(MemorySegment src, long n, Config cfg, MsdBucketPlan plan) throws Exception {
+	        if (!Apex.LOCAL_MSD_REPARTITION) {
+	            return;
 	        }
-	        ArrayList<Future<Boolean>> futures = new ArrayList<>(Apex.THREADS);
+
+	        int[] candidateIndexByBucket = new int[cfg.msdBucketCount];
+	        Arrays.fill(candidateIndexByBucket, -1);
+
+	        int[] candidateBucketsTemp = new int[cfg.msdBucketCount];
+	        int candidateCount = 0;
+
+	        for (int b = 0; b < cfg.msdBucketCount; b++) {
+	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b);
+	            if (localShift >= 0) {
+	                candidateIndexByBucket[b] = candidateCount;
+	                candidateBucketsTemp[candidateCount++] = b;
+	                plan.localMsdShifts[b] = localShift;
+	            }
+	        }
+
+	        if (candidateCount == 0) {
+	            return;
+	        }
+
+	        final int localCandidateCount = candidateCount;
+	        int[] candidateBuckets = Arrays.copyOf(candidateBucketsTemp, candidateCount);
+	        int rows = Apex.THREADS * candidateCount;
+	        int[][] childHistograms = new int[rows][cfg.msdBucketCount];
+	        long[][] childOrMasks = new long[rows][cfg.msdBucketCount];
+	        long[][] childAndMasks = new long[rows][cfg.msdBucketCount];
+
+	        for (int row = 0; row < rows; row++) {
+	            Arrays.fill(childAndMasks[row], ~0L);
+	        }
+
+	        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
 	        long chunk = n / Apex.THREADS;
-	        long expected = src.get(Apex.LONG, 0) >>> firstVariableBit;
+	        int bucketMask = cfg.msdBucketCount - 1;
 
 	        for (int t = 0; t < Apex.THREADS; t++) {
 	            final int tid = t;
@@ -214,9 +279,183 @@ public class msdbucketplan {
 	                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
 	                long p = s << 4;
 	                long end = e << 4;
+	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
+
+	                while (p <= unrolledEnd) {
+	                    long k0 = src.get(Apex.LONG, p);
+	                    long k1 = src.get(Apex.LONG, p + 16);
+	                    long k2 = src.get(Apex.LONG, p + 32);
+	                    long k3 = src.get(Apex.LONG, p + 48);
+
+	                    int parent0 = (int) ((k0 >>> plan.msdShift) & bucketMask);
+	                    int parent1 = (int) ((k1 >>> plan.msdShift) & bucketMask);
+	                    int parent2 = (int) ((k2 >>> plan.msdShift) & bucketMask);
+	                    int parent3 = (int) ((k3 >>> plan.msdShift) & bucketMask);
+
+	                    int candidateIndex0 = candidateIndexByBucket[parent0];
+	                    if (candidateIndex0 >= 0) {
+	                        int child = (int) ((k0 >>> plan.localMsdShifts[parent0]) & bucketMask);
+	                        int row = (tid * localCandidateCount) + candidateIndex0;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k0;
+	                        childAndMasks[row][child] &= k0;
+	                    }
+
+	                    int candidateIndex1 = candidateIndexByBucket[parent1];
+	                    if (candidateIndex1 >= 0) {
+	                        int child = (int) ((k1 >>> plan.localMsdShifts[parent1]) & bucketMask);
+	                        int row = (tid * localCandidateCount) + candidateIndex1;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k1;
+	                        childAndMasks[row][child] &= k1;
+	                    }
+
+	                    int candidateIndex2 = candidateIndexByBucket[parent2];
+	                    if (candidateIndex2 >= 0) {
+	                        int child = (int) ((k2 >>> plan.localMsdShifts[parent2]) & bucketMask);
+	                        int row = (tid * localCandidateCount) + candidateIndex2;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k2;
+	                        childAndMasks[row][child] &= k2;
+	                    }
+
+	                    int candidateIndex3 = candidateIndexByBucket[parent3];
+	                    if (candidateIndex3 >= 0) {
+	                        int child = (int) ((k3 >>> plan.localMsdShifts[parent3]) & bucketMask);
+	                        int row = (tid * localCandidateCount) + candidateIndex3;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k3;
+	                        childAndMasks[row][child] &= k3;
+	                    }
+
+	                    p += 4L * Apex.RECORD_BYTES;
+	                }
 
 	                while (p < end) {
-	                    if ((src.get(Apex.LONG, p) >>> firstVariableBit) != expected) {
+	                    long k = src.get(Apex.LONG, p);
+	                    int parent = (int) ((k >>> plan.msdShift) & bucketMask);
+	                    int candidateIndex = candidateIndexByBucket[parent];
+
+	                    if (candidateIndex >= 0) {
+	                        int child = (int) ((k >>> plan.localMsdShifts[parent]) & bucketMask);
+	                        int row = (tid * localCandidateCount) + candidateIndex;
+
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k;
+	                        childAndMasks[row][child] &= k;
+	                    }
+
+	                    p += Apex.RECORD_BYTES;
+	                }
+	            }));
+	        }
+
+	        tools.waitForFutures(futures);
+
+	        for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
+	            int parent = candidateBuckets[candidateIndex];
+	            long[] localStarts = new long[cfg.msdBucketCount];
+	            int[] localSizes = new int[cfg.msdBucketCount];
+	            long[] localVariableMasks = new long[cfg.msdBucketCount];
+	            int[][] localThreadOffsets = new int[Apex.THREADS][cfg.msdBucketCount];
+	            long pos = plan.starts[parent];
+	            long lowerMask = tools.lowBitsMask(plan.localMsdShifts[parent]);
+
+	            for (int child = 0; child < cfg.msdBucketCount; child++) {
+	                localStarts[child] = pos;
+
+	                int size = 0;
+	                long childOr = 0L;
+	                long childAnd = ~0L;
+	                int offset = 0;
+
+	                for (int t = 0; t < Apex.THREADS; t++) {
+	                    int row = (t * candidateCount) + candidateIndex;
+	                    int count = childHistograms[row][child];
+
+	                    localThreadOffsets[t][child] = offset;
+	                    offset += count;
+	                    size += count;
+
+	                    if (count != 0) {
+	                        childOr |= childOrMasks[row][child];
+	                        childAnd &= childAndMasks[row][child];
+	                    }
+	                }
+
+	                localSizes[child] = size;
+	                localVariableMasks[child] = size > 1 ? ((childOr ^ childAnd) & lowerMask) : 0L;
+	                pos += size;
+	            }
+
+	            if (pos != plan.starts[parent] + plan.sizes[parent]) {
+	                throw new RuntimeException("Local MSD histogram mismatch for bucket " + parent);
+	            }
+
+	            plan.localStarts[parent] = localStarts;
+	            plan.localSizes[parent] = localSizes;
+	            plan.localVariableMasks[parent] = localVariableMasks;
+	            plan.localThreadScatterOffsets[parent] = localThreadOffsets;
+	            plan.hasLocalMsd = true;
+	        }
+	    }
+
+	  static long collapsedPlanVariableMask(MsdBucketPlan plan, Config cfg) {
+	        long variableMask = 0L;
+
+	        for (int b = 0; b < cfg.msdBucketCount; b++) {
+	            if (plan.sizes[b] != 0) {
+	                variableMask |= plan.variableMasks[b];
+	            }
+	        }
+
+	        return variableMask;
+	    }
+
+	  static boolean prefixAboveWindowIsConstant(long variableMask, int firstVariableBit) {
+	        if (firstVariableBit >= 64) {
+	            return true;
+	        }
+
+	        return (variableMask & ~tools.lowBitsMask(firstVariableBit)) == 0L;
+	    }
+
+	  static boolean windowContainsVariableBits(long variableMask, int shift, int bits) {
+	        long windowMask = tools.lowBitsMask(bits) << shift;
+	        return (variableMask & windowMask) != 0L;
+	    }
+	  
+	  public static boolean prefixAboveWindowIsConstant(MemorySegment src, long n, int firstVariableBit) throws Exception {
+	        if (firstVariableBit >= 64 || n <= 1) {
+	            return true;
+	        }
+	        ArrayList<Future<Boolean>> futures = new ArrayList<>(Apex.THREADS);
+	        long chunk = n / Apex.THREADS;
+	        long prefixMask = ~tools.lowBitsMask(firstVariableBit);
+	        long expected = src.get(Apex.LONG, 0) & prefixMask;
+
+	        for (int t = 0; t < Apex.THREADS; t++) {
+	            final int tid = t;
+
+	            futures.add(Apex.POOL.submit(() -> {
+	                long s = tid * chunk;
+	                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
+	                long p = s << 4;
+	                long end = e << 4;
+	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
+
+	                while (p <= unrolledEnd) {
+	                    if (((src.get(Apex.LONG, p) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 16) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 32) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 48) & prefixMask) != expected)) {
+	                        return false;
+	                    }
+	                    p += 4L * Apex.RECORD_BYTES;
+	                }
+
+	                while (p < end) {
+	                    if ((src.get(Apex.LONG, p) & prefixMask) != expected) {
 	                        return false;
 	                    }
 	                    p += Apex.RECORD_BYTES;
