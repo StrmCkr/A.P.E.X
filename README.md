@@ -1,6 +1,6 @@
 # APEX 
 *
- * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
+ * Apex : Adaptive Parallel Entropic Dispatch 
  *
  * High-performance entropy-adaptive radix sorting for large-scale 64-bit
  * key/value datasets on modern multi-core processors.
@@ -51,7 +51,7 @@
  *
  *   These analyses allow Apex to:
  *     - skip entropy-free radix passes
- *     - avoid pathological partition fanout
+ *     - dynamically suppress refinement amplification and partition fanout
  *     - reduce tiny partition explosion
  *     - improve cache locality and partition balance
  *     - dynamically relocate MSD extraction windows
