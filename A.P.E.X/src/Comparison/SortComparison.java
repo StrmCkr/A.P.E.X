@@ -24,10 +24,11 @@ import main.Apex;
 import scatter.scattered;
 
 public final class SortComparison {
-    static final long DEFAULT_RECORDS = 1_000_000_000L;
+    static final long DEFAULT_RECORDS = 10_000_000L;
     static final int DEFAULT_RUNS = 3;
     static final int DEFAULT_WARMUPS = 1;
     static final long UNLIMITED = Long.MAX_VALUE;
+    static final int INSERTION_THRESHOLD = 64;
 
     interface Sorter {
         String name();
@@ -407,6 +408,12 @@ public final class SortComparison {
         add(available, new KeyBenchmark(new InsertionUnsigned()));
         add(available, new KeyBenchmark(new BubbleUnsigned()));
         add(available, new KeyBenchmark(new BucketUnsigned()));
+        add(available, new KeyBenchmark(new IntroSortUnsigned()));
+        add(available, new KeyBenchmark(new PdqSortUnsigned()));
+        add(available, new KeyBenchmark(new TimSortUnsigned()));
+        add(available, new KeyBenchmark(new AmericanFlagUnsigned()));
+        add(available, new KeyBenchmark(new SampleSortUnsigned()));
+        add(available, new KeyBenchmark(new BitonicUnsigned()));
 
         String normalized = spec.trim().toLowerCase(Locale.ROOT);
         String[] recordNames = new String[] {
@@ -421,7 +428,13 @@ public final class SortComparison {
                         "record-dual-pivot-quick",
                         "record-heap-sort",
                         "record-insertion",
-                        "record-bubble"
+                        "record-bubble",
+                        "introsort",
+                        "pdqsort",
+                        "timsort",
+                        "american-flag",
+                        "samplesort",
+                        "bitonic"
                 };
         String[] keyNames = new String[] {
                         "jdk-arrays-sort",
@@ -471,6 +484,364 @@ public final class SortComparison {
         System.arraycopy(second, 0, out, first.length, second.length);
         return out;
     }
+    
+    static final class AmericanFlagUnsigned implements Sorter {
+        static final int BITS = 8;
+        static final int RADIX = 1 << BITS;
+        static final int MASK = RADIX - 1;
+        static final int INSERTION_THRESHOLD = 64;
+
+        @Override
+        public String name() {
+            return "american-flag";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 250_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            sort(data, 0, data.length, 56);
+        }
+
+        static void sort(long[] data, int start, int end, int shift) {
+            int size = end - start;
+
+            if (size <= 1 || shift < 0) {
+                return;
+            }
+
+            if (size <= INSERTION_THRESHOLD) {
+                insertion(data, start, end);
+                return;
+            }
+
+            int[] count = new int[RADIX];
+
+            for (int i = start; i < end; i++) {
+                int digit = (int)((data[i] >>> shift) & MASK);
+                count[digit]++;
+            }
+
+            int[] begin = new int[RADIX];
+            int[] next = new int[RADIX];
+
+            begin[0] = start;
+
+            for (int i = 1; i < RADIX; i++) {
+                begin[i] = begin[i - 1] + count[i - 1];
+            }
+
+            System.arraycopy(begin, 0, next, 0, RADIX);
+
+            for (int b = 0; b < RADIX; b++) {
+                int limit = begin[b] + count[b];
+
+                while (next[b] < limit) {
+                    long value = data[next[b]];
+                    int digit = (int)((value >>> shift) & MASK);
+
+                    if (digit == b) {
+                        next[b]++;
+                        continue;
+                    }
+
+                    int target = next[digit]++;
+
+                    long tmp = data[target];
+                    data[target] = value;
+                    data[next[b]] = tmp;
+                }
+            }
+
+            if (shift == 0) {
+                return;
+            }
+
+            for (int b = 0; b < RADIX; b++) {
+                int lo = begin[b];
+                int hi = lo + count[b];
+
+                if (hi - lo > 1) {
+                    sort(data, lo, hi, shift - BITS);
+                }
+            }
+        }
+    } 
+    
+    
+    static final class BitonicUnsigned implements Sorter {
+        @Override
+        public String name() {
+            return "bitonic";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 4_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            int n = Integer.highestOneBit(data.length);
+
+            for (int k = 2; k <= n; k <<= 1) {
+                for (int j = k >>> 1; j > 0; j >>>= 1) {
+                    for (int i = 0; i < n; i++) {
+                        int ixj = i ^ j;
+
+                        if (ixj > i) {
+                            boolean asc = (i & k) == 0;
+
+                            if ((asc && Long.compareUnsigned(data[i], data[ixj]) > 0) ||
+                                (!asc && Long.compareUnsigned(data[i], data[ixj]) < 0)) {
+                                swap(data, i, ixj);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    
+    
+    static final class TimSortUnsigned implements Sorter {
+        @Override
+        public String name() {
+            return "timsort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 25_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            Long[] boxed = new Long[data.length];
+
+            for (int i = 0; i < data.length; i++) {
+                boxed[i] = data[i];
+            }
+
+            Arrays.sort(boxed, Long::compareUnsigned);
+
+            for (int i = 0; i < data.length; i++) {
+                data[i] = boxed[i];
+            }
+        }
+    }
+    
+    static final class SampleSortUnsigned implements Sorter {
+        public String name() {
+            return "samplesort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 100_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            sampleSort(data, 0, data.length);
+        }
+
+        static void sampleSort(long[] data, int lo, int hi) {
+            int size = hi - lo;
+
+            if (size <=INSERTION_THRESHOLD) {
+                insertion(data, lo, hi);
+                return;
+            }
+
+            long pivot1 = data[lo + (size >>> 2)];
+            long pivot2 = data[lo + (size >>> 1)];
+            long pivot3 = data[lo + ((size * 3) >>> 2)];
+
+            long[] pivots = { pivot1, pivot2, pivot3 };
+            Arrays.sort(pivots);
+
+            long p1 = pivots[0];
+            long p2 = pivots[1];
+            long p3 = pivots[2];
+
+            long[] tmp = new long[size];
+            int[] bucket = new int[4];
+
+            for (int i = lo; i < hi; i++) {
+                long v = data[i];
+
+                if (Long.compareUnsigned(v, p1) < 0) bucket[0]++;
+                else if (Long.compareUnsigned(v, p2) < 0) bucket[1]++;
+                else if (Long.compareUnsigned(v, p3) < 0) bucket[2]++;
+                else bucket[3]++;
+            }
+
+            int[] pos = new int[4];
+            pos[0] = 0;
+            pos[1] = bucket[0];
+            pos[2] = pos[1] + bucket[1];
+            pos[3] = pos[2] + bucket[2];
+
+            for (int i = lo; i < hi; i++) {
+                long v = data[i];
+
+                if (Long.compareUnsigned(v, p1) < 0) tmp[pos[0]++] = v;
+                else if (Long.compareUnsigned(v, p2) < 0) tmp[pos[1]++] = v;
+                else if (Long.compareUnsigned(v, p3) < 0) tmp[pos[2]++] = v;
+                else tmp[pos[3]++] = v;
+            }
+
+            System.arraycopy(tmp, 0, data, lo, size);
+
+            int a = lo + bucket[0];
+            int b = a + bucket[1];
+            int c = b + bucket[2];
+
+            sampleSort(data, lo, a);
+            sampleSort(data, a, b);
+            sampleSort(data, b, c);
+            sampleSort(data, c, hi);
+        }
+    }
+  
+    
+    
+    static final class PdqSortUnsigned implements Sorter {
+        static final int INSERTION_THRESHOLD = 24;
+
+        @Override
+        public String name() {
+            return "pdqsort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 100_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            pdq(data, 0, data.length - 1, false);
+        }
+
+        static void pdq(long[] data, int lo, int hi, boolean badPartition) {
+            while (hi - lo > INSERTION_THRESHOLD) {
+                int mid = (lo + hi) >>> 1;
+                long pivot = medianOfThree(data[lo], data[mid], data[hi]);
+
+                int i = lo;
+                int j = hi;
+
+                while (i <= j) {
+                    while (Long.compareUnsigned(data[i], pivot) < 0) i++;
+                    while (Long.compareUnsigned(data[j], pivot) > 0) j--;
+
+                    if (i <= j) {
+                        swap(data, i++, j--);
+                    }
+                }
+
+                boolean highlyUnbalanced =
+                        (j - lo) < ((hi - lo) >>> 4) ||
+                        (hi - i) < ((hi - lo) >>> 4);
+
+                if (highlyUnbalanced && badPartition) {
+                    Arrays.sort(data, lo, hi + 1);
+                    return;
+                }
+
+                if (j - lo < hi - i) {
+                    pdq(data, lo, j, highlyUnbalanced);
+                    lo = i;
+                } else {
+                    pdq(data, i, hi, highlyUnbalanced);
+                    hi = j;
+                }
+            }
+
+            insertion(data, lo, hi + 1);
+        }
+    }    
+    
+    
+    static final class IntroSortUnsigned implements Sorter {
+        static final int INSERTION_THRESHOLD = 32;
+
+        @Override
+        public String name() {
+            return "introsort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return 100_000_000L;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            int depth = 2 * (31 - Integer.numberOfLeadingZeros(data.length));
+            intro(data, 0, data.length - 1, depth);
+        }
+
+        static void intro(long[] data, int lo, int hi, int depth) {
+            while (hi - lo > INSERTION_THRESHOLD) {
+                if (depth == 0) {
+                    HeapUnsigned.siftDown(data, 0, hi + 1);
+                    Arrays.sort(data, lo, hi + 1);
+                    return;
+                }
+
+                depth--;
+                int p = QuickUnsigned.partition(data, lo, hi);
+
+                if (p - lo < hi - p) {
+                    intro(data, lo, p, depth);
+                    lo = p + 1;
+                } else {
+                    intro(data, p + 1, hi, depth);
+                    hi = p;
+                }
+            }
+
+            insertion(data, lo, hi + 1);
+        }
+    }  
+    
 
     static final class JdkSortUnsigned implements Sorter {
         @Override

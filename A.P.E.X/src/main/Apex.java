@@ -27,7 +27,7 @@ import scatter.scattered;
 
 
 /*
- * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
+ * Apex : Adaptive Parallel Entropic Dispatch 
  *
  * High-performance entropy-adaptive radix sorting for large-scale 64-bit
  * key/value datasets on modern multi-core processors.
@@ -78,7 +78,7 @@ import scatter.scattered;
  *
  *   These analyses allow Apex to:
  *     - skip entropy-free radix passes
- *     - avoid pathological partition fanout
+ *     - dynamically suppress refinement amplification and partition fanout
  *     - reduce tiny partition explosion
  *     - improve cache locality and partition balance
  *     - dynamically relocate MSD extraction windows
@@ -106,6 +106,32 @@ import scatter.scattered;
  *   and memory traffic for low-density entropy distributions.  
  *  - Tuple-cycle execution is adaptively enabled only when projected
  *   entropy density produces a net locality and radix-efficiency gain.
+ *   
+ *    *
+ * 	Sparse hypercube entropy collapse:
+ *  - Apex models distributed key entropy as occupancy across a sparse
+ *    high-dimensional radix hypercube.
+ *
+ *  - Entropy analysis identifies inactive, correlated, or degenerate
+ *    radix dimensions and dynamically collapses the effective search
+ *    space into compact executable tuple domains.
+ *
+ *  - This dimensionality reduction allows Apex to:
+ *      - eliminate entropy-empty radix axes
+ *      - compress sparse radix occupancy into dense tuple projections
+ *      - reduce histogram and scatter amplification
+ *      - suppress degenerate partition fanout
+ *      - minimize unnecessary radix traversal depth
+ *      - improve cache locality and work distribution
+ *
+ *  - Collapse planning is driven by observed bit occupancy,
+ *    tuple cardinality, duplicate density, and entropy continuity
+ *    across radix dimensions.
+ *
+  *  - The resulting execution topology behaves as an adaptive
+ *    dimensional projection system, remapping sparse entropy
+ *    regions into lower-dimensional executable spaces.
+ *
  *
  * Designed for:
  *   - Large-scale 64-bit sorting workloads
