@@ -1,5 +1,5 @@
 # APEX 
-*
+/*
  * Apex : Adaptive Parallel Entropic Dispatch 
  *
  * High-performance entropy-adaptive radix sorting for large-scale 64-bit
@@ -12,11 +12,11 @@
  *   and minimize unnecessary memory movement and radix passes.
  *
  * Architectural model:
- *      - Entropy-adaptive MSD partition planning
- *      - Parallel radix scatter and partition execution
- *      - Hybrid MSD-LSD radix pipeline
- *      - Locality-aware memory dispatch and execution routing
- *      - Adaptive in-place and off-heap processing strategies
+ *   - Entropy-adaptive MSD partition planning
+ *   - Parallel radix scatter and partition execution
+ *   - Hybrid MSD-LSD radix pipeline
+ *   - Locality-aware memory dispatch and execution routing
+ *   - Adaptive in-place and off-heap processing strategies
  *
  * A : Adaptive
  *     - dynamically selects radix windows, partition geometry,
@@ -37,8 +37,8 @@
  *       memory locality, and heap/off-heap execution strategies
  *
  * Entropy determination engine:
- *     - Apex uses bitwise statistical analysis to determine effective
- *      entropy regions and eliminate non-contributing radix windows.
+ *   Apex uses bitwise statistical analysis to determine effective
+ *   entropy regions and eliminate non-contributing radix windows.
  *
  *   Bitwise entropy reduction includes:
  *     - XOR analysis to detect changing bit regions
@@ -57,34 +57,60 @@
  *     - dynamically relocate MSD extraction windows
  *
  * Hybrid radix pipeline:
- *      - MSD radix scatter for global entropy-guided partitioning
- *      - LSD radix refinement for efficient in-partition ordering
- *      - Adaptive tuple-cycle optimization for compact entropy domains
- *      - Dynamic fallback paths for pathological distributions
+ *   - MSD radix scatter for global entropy-guided partitioning
+ *   - LSD radix refinement for efficient in-partition ordering
+ *   - Adaptive tuple-cycle optimization for compact entropy domains
+ *   - Dynamic fallback paths for pathological distributions
  *
  * Features:
- *      - Entropy-aware MSD window planning
- *      - Adaptive radix-width selection
- *      - Runtime auto-tuning of radix geometry and thresholds
- *      - Packed tuple-cycle execution
- *      - Locality-aware partition scheduling
- *      - Hybrid heap and off-heap execution
- *      - Parallel histogram, scatter, and partition processing
- *      - Adaptive tiny-partition handling
- *      - Degenerate partition mitigation
+ *   - Entropy-aware MSD window planning
+ *   - Adaptive radix-width selection
+ *   - Runtime auto-tuning of radix geometry and thresholds
+ *   - Packed tuple-cycle execution
+ *   - Locality-aware partition scheduling
+ *   - Hybrid heap and off-heap execution
+ *   - Parallel histogram, scatter, and partition processing
+ *   - Adaptive tiny-partition handling
+ *   - Degenerate partition mitigation
  *
  *  Sparse entropy tuple projection:
- *     - Apex can dynamically remap sparse distributed entropy regions
- *      into compact tuple domains, reducing radix space, histogram size,
- *      and memory traffic for low-density entropy distributions.  
- *     - Tuple-cycle execution is adaptively enabled only when projected
- *      entropy density produces a net locality and radix-efficiency gain.
+ *  - Apex can dynamically remap sparse distributed entropy regions
+ *   into compact tuple domains, reducing radix space, histogram size,
+ *   and memory traffic for low-density entropy distributions.  
+ *  - Tuple-cycle execution is adaptively enabled only when projected
+ *   entropy density produces a net locality and radix-efficiency gain.
+ *   
+ *    *
+ * 	Sparse hypercube entropy collapse:
+ *  - Apex models distributed key entropy as occupancy across a sparse
+ *    high-dimensional radix hypercube.
+ *
+ *  - Entropy analysis identifies inactive, correlated, or degenerate
+ *    radix dimensions and dynamically collapses the effective search
+ *    space into compact executable tuple domains.
+ *
+ *  - This dimensionality reduction allows Apex to:
+ *      - eliminate entropy-empty radix axes
+ *      - compress sparse radix occupancy into dense tuple projections
+ *      - reduce histogram and scatter amplification
+ *      - suppress degenerate partition fanout
+ *      - minimize unnecessary radix traversal depth
+ *      - improve cache locality and work distribution
+ *
+ *  - Collapse planning is driven by observed bit occupancy,
+ *    tuple cardinality, duplicate density, and entropy continuity
+ *    across radix dimensions.
+ *
+  *  - The resulting execution topology behaves as an adaptive
+ *    dimensional projection system, remapping sparse entropy
+ *    regions into lower-dimensional executable spaces.
+ *
  *
  * Designed for:
- *      - Large-scale 64-bit sorting workloads
- *      - High-core-count desktop and server processors
- *      - Memory-bandwidth-sensitive workloads
- *      - Adversarial and real-world data distributions
+ *   - Large-scale 64-bit sorting workloads
+ *   - High-core-count desktop and server processors
+ *   - Memory-bandwidth-sensitive workloads
+ *   - Adversarial and real-world data distributions
  *
  * Robustness:
  *   Maintains stable behavior across:
@@ -103,8 +129,8 @@
  *   The architecture is designed for experimentation,
  *   extensibility, and deep runtime adaptability rather than
  *   static one-size-fits-all radix behavior.
-
  */
+ 
  * - Visualizer notes:
 - an approimator for the effects of the real code
 - missing optimization for Entropic distributions
