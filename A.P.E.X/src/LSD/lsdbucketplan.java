@@ -69,46 +69,52 @@ public class lsdbucketplan {
 	        return contiguousCycles;
 	    }
 
-	  public  static int buildContiguousLsdCyclePlan(
-	            long variableMask,
-	            Config cfg,
-	            int remainingBits,
-	            int[] cycleShifts,
-	            int[] cycleMasks,
-	            long[] cycleBitMasks,
-	            long[] cycleTuplePlans
-	    ) {
-	        int cycles = 0;
-	        int bit = 0;
+	  public static int buildContiguousLsdCyclePlan(
+		        long variableMask,
+		        Config cfg,
+		        int remainingBits,
+		        int[] cycleShifts,
+		        int[] cycleMasks,
+		        long[] cycleBitMasks,
+		        long[] cycleTuplePlans
+		) {
+		    // Zero out any high-order bits beyond our active range
+		    variableMask &= tools.lowBitsMask(remainingBits);
+		    int cycles = 0;
 
-	        while (bit < remainingBits) {
-	            while (bit < remainingBits && ((variableMask >>> bit) & 1L) == 0L) {
-	                bit++;
-	            }
+		    while (variableMask != 0) {
+		        // 1. Instantly pinpoint the start of the next active contiguous run via TZCNT
+		        int runStart = Long.numberOfTrailingZeros(variableMask);
 
-	            int runStart = bit;
+		        // 2. Isolate the contiguous block by creating a mask that flips trailing zeros to ones
+		        long invertedMask = ~variableMask;
+		        // Strip out trailing zeros from the inverted space to locate where the active run stops
+		        long trailingZerosCleared = invertedMask >>> runStart;
+		        int runLength = Long.numberOfTrailingZeros(trailingZerosCleared);
+		        int runEnd = runStart + runLength;
 
-	            while (bit < remainingBits && ((variableMask >>> bit) & 1L) != 0L) {
-	                bit++;
-	            }
+		        // 3. Construct your standard execution parameters for this discovered block range
+		        for (int shift = runStart; shift < runEnd; shift += cfg.lsdBits) {
+		            int bitsThisCycle = Math.min(cfg.lsdBits, runEnd - shift);
+		            long bitMask = tools.lowBitsMask(bitsThisCycle) << shift;
 
-	            int runEnd = bit;
+		            cycleShifts[cycles] = shift;
+		            cycleMasks[cycles] = tools.lowIntMask(bitsThisCycle);
+		            cycleBitMasks[cycles] = bitMask;
+		            cycleTuplePlans[cycles] = 0L;
 
-	            for (int shift = runStart; shift < runEnd; shift += cfg.lsdBits) {
-	                int bitsThisCycle = Math.min(cfg.lsdBits, runEnd - shift);
-	                long bitMask = tools.lowBitsMask(bitsThisCycle) << shift;
+		            cycles++;
+		        }
 
-	                cycleShifts[cycles] = shift;
-	                cycleMasks[cycles] = tools.lowIntMask(bitsThisCycle);
-	                cycleBitMasks[cycles] = bitMask;
-	                cycleTuplePlans[cycles] = 0L;
+		        // 4. Clear out the entire processed contiguous run in a single instruction pass
+		        // (Creates a mask spanning from runEnd down to bit 0, then ANDs it away)
+		        long clearMask = (runEnd >= 64) ? 0L : (~0L << runEnd);
+		        variableMask &= clearMask;
+		    }
 
-	                cycles++;
-	            }
-	        }
+		    return cycles;
+		}
 
-	        return cycles;
-	    }
 
 	  static int packedTupleCycleCount(long variableMask, Config cfg) {
 	        int variableBits = Long.bitCount(variableMask);
