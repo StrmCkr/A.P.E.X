@@ -134,47 +134,13 @@ public class tuples {
 
         tupleCountingPass(sc.k1, sc.v1, sc.k2, sc.v2, size, sc, entropyMask, smallTuplePlan);
 
-        // --- 🚀 NT-Optimized Non-Temporal Streaming Writeback Pass ---
         p = base;
-        int vi = 0; // Isolated loop counter prevents variable scope collision errors
-        
-        int vectorStrideRecords = 8;
-        int vectorEnd = size - (size % vectorStrideRecords);
-
-        for (; vi < vectorEnd; vi += 8) {
-            jdk.incubator.vector.LongVector vec0 = jdk.incubator.vector.LongVector.fromArray(
-                jdk.incubator.vector.LongVector.SPECIES_512, 
-                new long[]{
-                    sc.k2[vi], sc.v2[vi], sc.k2[vi+1], sc.v2[vi+1], 
-                    sc.k2[vi+2], sc.v2[vi+2], sc.k2[vi+3], sc.v2[vi+3]
-                }, 
-                0
-            );
-            
-            jdk.incubator.vector.LongVector vec1 = jdk.incubator.vector.LongVector.fromArray(
-                jdk.incubator.vector.LongVector.SPECIES_512, 
-                new long[]{
-                    sc.k2[vi+4], sc.v2[vi+4], sc.k2[vi+5], sc.v2[vi+5], 
-                    sc.k2[vi+6], sc.v2[vi+6], sc.k2[vi+7], sc.v2[vi+7]
-                }, 
-                0
-            );
-
-            // Bypasses the caches to write directly straight to System RAM
-            vec0.intoMemorySegment(dst, p, java.nio.ByteOrder.nativeOrder());
-            vec1.intoMemorySegment(dst, p + 64, java.nio.ByteOrder.nativeOrder());
-            
-            p += 128;
-        }
-
-        // Clean remainder tail data safely
-        for (; vi < size; vi++) {
-            dst.set(Apex.LONG, p, sc.k2[vi]);
-            dst.set(Apex.LONG, p + 8, sc.v2[vi]);
+        for (int i = 0; i < size; i++) {
+            dst.set(Apex.LONG, p, sc.k2[i]);
+            dst.set(Apex.LONG, p + 8, sc.v2[i]);
             p += Apex.RECORD_BYTES;
         }
     }
-
 
     public static void directTupleSpaceSortOffHeap(
             MemorySegment scratch,

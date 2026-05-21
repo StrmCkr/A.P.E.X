@@ -185,36 +185,22 @@ public class msdbucketplan {
 
 	        return plan;
 	    }
-	 
-
-
-	    /**
-	     * Symmetrical Adaptive MSD Planning Window Router.
-	     * Restored to natively shift the extraction window down across candidate radix boundaries
-	     * if data collapses into a single bucket.
-	     */
-	    public static MsdBucketPlan buildAdaptiveMsdBucketPlan(MemorySegment src, long n, Config cfg) throws Exception {
+	
+	 public static MsdBucketPlan buildAdaptiveMsdBucketPlan(MemorySegment src, long n, Config cfg) throws Exception {
 	        int topShift = 64 - cfg.msdBits;
 	        HistogramResult topHist = buildhistogram.buildMsdHistograms(src, n, cfg, topShift);
 	        MsdBucketPlan topPlan = buildMsdBucketPlan(topHist, n, cfg, topShift);
 
-	        // --- 🚀 Native A.P.E.X Shift Trigger ---
-	        // If the largest bucket size is LESS than the total records (n), it means 
-	        // the data is already successfully split across multiple buckets. Run local partitions and exit!
 	        if (largestBucketSize(topPlan, cfg) != n) {
 	            attachLocalMsdPlans(src, n, cfg, topPlan);
 	            return topPlan;
 	        }
 
-	        // If we reach here, it means ALL data collapsed into 1 bucket (e.g. LOW_BITS_ONLY).
-	        // Calculate the variable mask across the plan to see where the active bits reside.
 	        long variableMask = collapsedPlanVariableMask(topPlan, cfg);
 	        if (variableMask == 0L) {
-	            return topPlan; // Trivial dataset (all keys identical)
+	            return topPlan;
 	        }
 
-	        // --- 🧠 The Window Shifting Cycle ---
-	        // Scan through candidate shifts (32, 16, 8, 0) to find the window that locks onto the low bits
 	        for (int shift : msdShiftCandidates(cfg)) {
 	            if (shift == topShift) {
 	                continue;
@@ -228,35 +214,29 @@ public class msdbucketplan {
 	                continue;
 	            }
 
-	            // Recalculate histograms on the shifted lower bit target region
 	            HistogramResult hist = buildhistogram.buildMsdHistograms(src, n, cfg, shift);
 	            MsdBucketPlan plan = buildMsdBucketPlan(hist, n, cfg, shift);
 
-	            // If the shifted plan successfully breaks the data apart (largest bucket < n),
-	            // or if we have reached the bottom floor (shift == 0), attach plans and execute!
 	            if (largestBucketSize(plan, cfg) != n || shift == 0) {
 	                attachLocalMsdPlans(src, n, cfg, plan);
-	                return plan; // 🎯 Shifting window successfully deployed!
+	                return plan;
 	            }
 	        }
 
 	        attachLocalMsdPlans(src, n, cfg, topPlan);
 	        return topPlan;
 	    }
-
-
-		  
-	    public static int largestBucketSize(MsdBucketPlan plan, Config cfg) {
+	  
+	  public static int largestBucketSize(MsdBucketPlan plan, Config cfg) {
 	        int max = 0;
 	        for (int i = 0; i < cfg.msdBucketCount; i++) {
 	            if (plan.sizes[i] > max) {
 	                max = plan.sizes[i];
 	            }
 	        }
-	        return max;    
-	    }
+	        return max;    }
 
-	    public static boolean globallyMonotonic(HistogramResult result, boolean ascending) {
+	  static boolean globallyMonotonic(HistogramResult result, boolean ascending) {
 	        boolean sawAny = false;
 	        long previousLast = 0L;
 
@@ -286,7 +266,8 @@ public class msdbucketplan {
 
 	        return true;
 	    }
-	    static void attachLocalMsdPlans(MemorySegment src, long n, Config cfg, MsdBucketPlan plan) throws Exception {
+
+	  static void attachLocalMsdPlans(MemorySegment src, long n, Config cfg, MsdBucketPlan plan) throws Exception {
 	        if (!Apex.LOCAL_MSD_REPARTITION) {
 	            return;
 	        }
@@ -333,80 +314,56 @@ public class msdbucketplan {
 	                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
 	                long p = s << 4;
 	                long end = e << 4;
-	                
-	                // --- 🚀 Upgraded Stride Staging: 8-Way Pipelined Memory Fetch Tracks ---
-	                long vectorStrideBytes = 8L * Apex.RECORD_BYTES;
-	                long unrolledEnd = end - vectorStrideBytes;
+	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
 
 	                while (p <= unrolledEnd) {
 	                    long k0 = src.get(Apex.LONG, p);
 	                    long k1 = src.get(Apex.LONG, p + 16);
 	                    long k2 = src.get(Apex.LONG, p + 32);
 	                    long k3 = src.get(Apex.LONG, p + 48);
-	                    long k4 = src.get(Apex.LONG, p + 64);
-	                    long k5 = src.get(Apex.LONG, p + 80);
-	                    long k6 = src.get(Apex.LONG, p + 96);
-	                    long k7 = src.get(Apex.LONG, p + 112);
 
 	                    int parent0 = (int) ((k0 >>> plan.msdShift) & bucketMask);
 	                    int parent1 = (int) ((k1 >>> plan.msdShift) & bucketMask);
 	                    int parent2 = (int) ((k2 >>> plan.msdShift) & bucketMask);
 	                    int parent3 = (int) ((k3 >>> plan.msdShift) & bucketMask);
-	                    int parent4 = (int) ((k4 >>> plan.msdShift) & bucketMask);
-	                    int parent5 = (int) ((k5 >>> plan.msdShift) & bucketMask);
-	                    int parent6 = (int) ((k6 >>> plan.msdShift) & bucketMask);
-	                    int parent7 = (int) ((k7 >>> plan.msdShift) & bucketMask);
 
 	                    int candidateIndex0 = candidateIndexByBucket[parent0];
 	                    if (candidateIndex0 >= 0) {
 	                        int child = (int) ((k0 >>> plan.localMsdShifts[parent0]) & bucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex0;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k0; childAndMasks[row][child] &= k0;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k0;
+	                        childAndMasks[row][child] &= k0;
 	                    }
+
 	                    int candidateIndex1 = candidateIndexByBucket[parent1];
 	                    if (candidateIndex1 >= 0) {
 	                        int child = (int) ((k1 >>> plan.localMsdShifts[parent1]) & bucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex1;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k1; childAndMasks[row][child] &= k1;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k1;
+	                        childAndMasks[row][child] &= k1;
 	                    }
+
 	                    int candidateIndex2 = candidateIndexByBucket[parent2];
 	                    if (candidateIndex2 >= 0) {
 	                        int child = (int) ((k2 >>> plan.localMsdShifts[parent2]) & bucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex2;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k2; childAndMasks[row][child] &= k2;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k2;
+	                        childAndMasks[row][child] &= k2;
 	                    }
+
 	                    int candidateIndex3 = candidateIndexByBucket[parent3];
 	                    if (candidateIndex3 >= 0) {
 	                        int child = (int) ((k3 >>> plan.localMsdShifts[parent3]) & bucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex3;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k3; childAndMasks[row][child] &= k3;
-	                    }
-	                    int candidateIndex4 = candidateIndexByBucket[parent4];
-	                    if (candidateIndex4 >= 0) {
-	                        int child = (int) ((k4 >>> plan.localMsdShifts[parent4]) & bucketMask);
-	                        int row = (tid * localCandidateCount) + candidateIndex4;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k4; childAndMasks[row][child] &= k4;
-	                    }
-	                    int candidateIndex5 = candidateIndexByBucket[parent5];
-	                    if (candidateIndex5 >= 0) {
-	                        int child = (int) ((k5 >>> plan.localMsdShifts[parent5]) & bucketMask);
-	                        int row = (tid * localCandidateCount) + candidateIndex5;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k5; childAndMasks[row][child] &= k5;
-	                    }
-	                    int candidateIndex6 = candidateIndexByBucket[parent6];
-	                    if (candidateIndex6 >= 0) {
-	                        int child = (int) ((k6 >>> plan.localMsdShifts[parent6]) & bucketMask);
-	                        int row = (tid * localCandidateCount) + candidateIndex6;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k6; childAndMasks[row][child] &= k6;
-	                    }
-	                    int candidateIndex7 = candidateIndexByBucket[parent7];
-	                    if (candidateIndex7 >= 0) {
-	                        int child = (int) ((k7 >>> plan.localMsdShifts[parent7]) & bucketMask);
-	                        int row = (tid * localCandidateCount) + candidateIndex7;
-	                        childHistograms[row][child]++; childOrMasks[row][child] |= k7; childAndMasks[row][child] &= k7;
+	                        childHistograms[row][child]++;
+	                        childOrMasks[row][child] |= k3;
+	                        childAndMasks[row][child] &= k3;
 	                    }
 
-	                    p += vectorStrideBytes;
+	                    p += 4L * Apex.RECORD_BYTES;
 	                }
 
 	                while (p < end) {
@@ -477,124 +434,126 @@ public class msdbucketplan {
 	            plan.hasLocalMsd = true;
 	        }
 	    }
-	
-static long collapsedPlanVariableMask(MsdBucketPlan plan, Config cfg) {
-    long variableMask = 0L;
 
-    for (int b = 0; b < cfg.msdBucketCount; b++) {
-        if (plan.sizes[b] != 0) {
-            variableMask |= plan.variableMasks[b];
-        }
-    }
+	  static long collapsedPlanVariableMask(MsdBucketPlan plan, Config cfg) {
+	        long variableMask = 0L;
 
-    return variableMask;
-}
+	        for (int b = 0; b < cfg.msdBucketCount; b++) {
+	            if (plan.sizes[b] != 0) {
+	                variableMask |= plan.variableMasks[b];
+	            }
+	        }
 
-static boolean prefixAboveWindowIsConstant(long variableMask, int firstVariableBit) {
-    if (firstVariableBit >= 64) {
-        return true;
-    }
+	        return variableMask;
+	    }
 
-    return (variableMask & ~tools.lowBitsMask(firstVariableBit)) == 0L;
-}
+	  static boolean prefixAboveWindowIsConstant(long variableMask, int firstVariableBit) {
+	        if (firstVariableBit >= 64) {
+	            return true;
+	        }
 
-static boolean windowContainsVariableBits(long variableMask, int shift, int bits) {
-    long windowMask = tools.lowBitsMask(bits) << shift;
-    return (variableMask & windowMask) != 0L;
-}
-  
-public static boolean prefixAboveWindowIsConstant(MemorySegment src, long n, int firstVariableBit) throws Exception {
-    if (firstVariableBit >= 64 || n <= 1) {
-        return true;
-    }
-    ArrayList<Future<Boolean>> futures = new ArrayList<>(Apex.THREADS);
-    long chunk = n / Apex.THREADS;
-    long prefixMask = ~tools.lowBitsMask(firstVariableBit);
-    long expected = src.get(Apex.LONG, 0) & prefixMask;
+	        return (variableMask & ~tools.lowBitsMask(firstVariableBit)) == 0L;
+	    }
 
-    for (int t = 0; t < Apex.THREADS; t++) {
-        final int tid = t;
+	  static boolean windowContainsVariableBits(long variableMask, int shift, int bits) {
+	        long windowMask = tools.lowBitsMask(bits) << shift;
+	        return (variableMask & windowMask) != 0L;
+	    }
+	  
+	  public static boolean prefixAboveWindowIsConstant(MemorySegment src, long n, int firstVariableBit) throws Exception {
+	        if (firstVariableBit >= 64 || n <= 1) {
+	            return true;
+	        }
+	        ArrayList<Future<Boolean>> futures = new ArrayList<>(Apex.THREADS);
+	        long chunk = n / Apex.THREADS;
+	        long prefixMask = ~tools.lowBitsMask(firstVariableBit);
+	        long expected = src.get(Apex.LONG, 0) & prefixMask;
 
-        futures.add(Apex.POOL.submit(() -> {
-            long s = tid * chunk;
-            long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
-            long p = s << 4;
-            long end = e << 4;
-            long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
+	        for (int t = 0; t < Apex.THREADS; t++) {
+	            final int tid = t;
 
-            while (p <= unrolledEnd) {
-                if (((src.get(Apex.LONG, p) & prefixMask) != expected) ||
-                        ((src.get(Apex.LONG, p + 16) & prefixMask) != expected) ||
-                        ((src.get(Apex.LONG, p + 32) & prefixMask) != expected) ||
-                        ((src.get(Apex.LONG, p + 48) & prefixMask) != expected)) {
-                    return false;
-                }
-                p += 4L * Apex.RECORD_BYTES;
-            }
+	            futures.add(Apex.POOL.submit(() -> {
+	                long s = tid * chunk;
+	                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
+	                long p = s << 4;
+	                long end = e << 4;
+	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
 
-            while (p < end) {
-                if ((src.get(Apex.LONG, p) & prefixMask) != expected) {
-                    return false;
-                }
-                p += Apex.RECORD_BYTES;
-            }
+	                while (p <= unrolledEnd) {
+	                    if (((src.get(Apex.LONG, p) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 16) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 32) & prefixMask) != expected) ||
+	                            ((src.get(Apex.LONG, p + 48) & prefixMask) != expected)) {
+	                        return false;
+	                    }
+	                    p += 4L * Apex.RECORD_BYTES;
+	                }
 
-            return true;
-        }));
-    }
+	                while (p < end) {
+	                    if ((src.get(Apex.LONG, p) & prefixMask) != expected) {
+	                        return false;
+	                    }
+	                    p += Apex.RECORD_BYTES;
+	                }
 
-    for (Future<Boolean> future : futures) {
-        if (!future.get()) {
-            return false;
-        }
-    }
+	                return true;
+	            }));
+	        }
 
-    return true;
-}
-    
-static int[] msdShiftCandidates(Config cfg) {
-    TreeSet<Integer> shifts = new TreeSet<>(Comparator.reverseOrder());
-    int topShift = 64 - cfg.msdBits;
+	        for (Future<Boolean> future : futures) {
+	            if (!future.get()) {
+	                return false;
+	            }
+	        }
 
-    for (int shift = topShift; shift > 0; shift = Math.max(0, shift - cfg.msdBits)) {
-        shifts.add(shift);
-        if (shift <= cfg.msdBits) {
-            shifts.add(0);
-            break;
-        }
-    }
+	        return true;
+	    }
+	        
 
-    int[] anchorShifts = {32, 16, 8, 0};
-    for (int shift : anchorShifts) {
-        if (shift >= 0 && shift <= topShift) {
-            shifts.add(shift);
-        }
-    }
+	        static int[] msdShiftCandidates(Config cfg) {
+	            TreeSet<Integer> shifts = new TreeSet<>(Comparator.reverseOrder());
+	            int topShift = 64 - cfg.msdBits;
 
-    return shifts.stream().mapToInt(Integer::intValue).toArray();
-}
-    
-public static int[] buildLsdWorkBucketsByDescendingSize(MsdBucketPlan plan, Config cfg) {
-    long[] packed = new long[cfg.msdBucketCount];
-    int workCount = 0;
+	            for (int shift = topShift; shift > 0; shift = Math.max(0, shift - cfg.msdBits)) {
+	                shifts.add(shift);
+	                if (shift <= cfg.msdBits) {
+	                    shifts.add(0);
+	                    break;
+	                }
+	            }
 
-    for (int b = 0; b < cfg.msdBucketCount; b++) {
-        int size = plan.sizes[b];
+	            int[] anchorShifts = {32, 16, 8, 0};
+	            for (int shift : anchorShifts) {
+	                if (shift >= 0 && shift <= topShift) {
+	                    shifts.add(shift);
+	                }
+	            }
 
-        if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
-            // Descending size order sort mechanism mapping
-            packed[workCount++] = (((long) -size) << 32) | (b & 0xFFFFFFFFL);
-        }
-    }
+	            return shifts.stream().mapToInt(Integer::intValue).toArray();
+	        }
+	        
+	        public static int[] buildLsdWorkBucketsByDescendingSize(MsdBucketPlan plan, Config cfg) {
+	            long[] packed = new long[cfg.msdBucketCount];
+	            int workCount = 0;
 
-    Arrays.sort(packed, 0, workCount);
+	            for (int b = 0; b < cfg.msdBucketCount; b++) {
+	                int size = plan.sizes[b];
 
-    int[] workBuckets = new int[workCount];
+	                if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+	                    packed[workCount++] = (((long) -size) << 32) | (b & 0xFFFFFFFFL);
+	                }
+	            }
 
-    for (int i = 0; i < workCount; i++) {
-        workBuckets[i] = (int) packed[i];
-    }
+	            Arrays.sort(packed, 0, workCount);
 
-    return workBuckets;
-}
+	            int[] workBuckets = new int[workCount];
+
+	            for (int i = 0; i < workCount; i++) {
+	                workBuckets[i] = (int) packed[i];
+	            }
+
+	            return workBuckets;
+	        }
+
+	  
 }
