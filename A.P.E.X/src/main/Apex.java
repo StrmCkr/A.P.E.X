@@ -203,6 +203,12 @@ public class Apex {
             Runtime.getRuntime().availableProcessors()
     );
     public static final int THREADS_PER_DOMAINGROUP = Math.max(1, THREADS / 2);
+    
+    // 🚀 Symmetrical Hardware-Adaptive Species: Instantly visible across all classes
+    @SuppressWarnings({"removal", "preview"})
+    public static final jdk.incubator.vector.VectorSpecies<Long> L_SPECIES = jdk.incubator.vector.LongVector.SPECIES_PREFERRED;
+    public static final int RECORDS_PER_REG = L_SPECIES.vectorByteSize() >>> 4;
+
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;

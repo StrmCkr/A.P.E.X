@@ -14,13 +14,7 @@ import main.Apex;
 
 @SuppressWarnings({"removal", "preview"})
 public class buildhistogram {
-
-    // 🚀 Hardware-Adaptive Species Selector: Locks onto 256-bit AVX2 on 1800X, scales to 512-bit AVX-512 on 7950X
-    private static final VectorSpecies<Long> L_SPECIES = LongVector.SPECIES_PREFERRED;
     
-    // Calculate how many 16-byte records can fit into a single native hardware register
-    private static final int RECORDS_PER_REG = L_SPECIES.vectorByteSize() >>> 4;
-
     /**
      * 🚀 Hardware-Adaptive Vectorized MSD Histogram Scanner.
      * Natively structures its register lane widths to match your host processor,
@@ -54,7 +48,7 @@ public class buildhistogram {
                 long end = e << 4;
 
                 // Establish dynamic vector stride bounds based on active hardware width
-                int stepRecords = RECORDS_PER_REG;
+                int stepRecords = main.Apex.RECORDS_PER_REG;
                 long strideBytes = (long) stepRecords << 4;
                 long unrolledEnd = end - strideBytes;
 
@@ -77,7 +71,7 @@ public class buildhistogram {
                     // 1. Load an entire native register's worth of keys directly from the off-heap segment
                     // On 1800X: Loads 2 records (4 longs / 32 bytes). On 7950X: Loads 4 records (8 longs / 64 bytes).
                     LongVector vec = LongVector.fromMemorySegment(
-                            L_SPECIES, src, p, java.nio.ByteOrder.nativeOrder()
+                            main.Apex.L_SPECIES, src, p, java.nio.ByteOrder.nativeOrder()
                     );
 
                     // 2. Perform scalar-unrolled sequence tracking across the register's elements
