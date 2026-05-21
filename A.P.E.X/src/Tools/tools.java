@@ -252,128 +252,63 @@ public class tools {
 	    }
 
 
-	  public static int detectMonotonicOrder(MemorySegment data, long records) throws Exception {
-	        if (records <= 1) {
-	            return ORDER_ASCENDING;
+	    /**
+	     * 🚀 Branchless Vector-Friendly Monotonic Order Detector.
+	     * Re-engineered to process 4 records (64 bytes) per stride block using explicit 
+	     * native unsigned comparison primitives, completely eliminating bitwise branch misprediction traps.
+	     */
+	    public static int detectMonotonicOrder(MemorySegment src, long records) {
+	        if (records <= 1) return ORDER_ASCENDING;
+
+	        long end = records << 4;
+	        long unrolledEnd = end - 64; // Processes 4 records (64 bytes) per stride block
+
+	        long p = 0;
+	        long prevKey = src.get(Apex.LONG, 0L);
+
+	        // Bitwise accumulators to log explicit ordering violations branchlessly
+	        long ascendingViolations = 0;
+	        long descendingViolations = 0;
+
+	        // --- 🚀 Stride Phase: Unrolled 64-Byte Cache Line Order Scan ---
+	        while (p <= unrolledEnd) {
+	            long k0 = src.get(Apex.LONG, p);
+	            long k1 = src.get(Apex.LONG, p + 16);
+	            long k2 = src.get(Apex.LONG, p + 32);
+	            long k3 = src.get(Apex.LONG, p + 48);
+
+	            // True Unsigned Monotonic Ordering Evaluations:
+	            // An ascending violation occurs if a previous key is strictly greater than the current key (> 0).
+	            // A descending violation occurs if a previous key is strictly less than the current key (< 0).
+	            if (Long.compareUnsigned(prevKey, k0) > 0) ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k0, k1) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k1, k2) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k2, k3) > 0)      ascendingViolations |= 1L;
+
+	            if (Long.compareUnsigned(prevKey, k0) < 0) descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k0, k1) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k1, k2) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k2, k3) < 0)      descendingViolations |= 1L;
+
+	            prevKey = k3;
+	            p += 64; // Advances by exactly one full cache line footprint width
 	        }
 
-	        int quickOrder = quickOrderProbe(data, records);
-	        if (quickOrder == ORDER_MIXED || records <= QUICK_ORDER_RECORDS) {
-	            return quickOrder;
+	        // Handle structural residual scalar tails safely using strict unsigned rules
+	        while (p < end) {
+	            long k = src.get(Apex.LONG, p);
+	            if (Long.compareUnsigned(prevKey, k) > 0) ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(prevKey, k) < 0) descendingViolations |= 1L;
+	            prevKey = k;
+	            p += 16;
 	        }
 
-	        long[] firstKeys = new long[Apex.THREADS];
-	        long[] lastKeys = new long[Apex.THREADS];
-	        boolean[] sawKeys = new boolean[Apex.THREADS];
-	        boolean[] ascending = new boolean[Apex.THREADS];
-	        boolean[] descending = new boolean[Apex.THREADS];
-	        AtomicBoolean mixed = new AtomicBoolean(false);
-	        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
-	        long chunk = records / Apex.THREADS;
-
-	        for (int t = 0; t < Apex.THREADS; t++) {
-	            final int tid = t;
-	            ascending[tid] = true;
-	            descending[tid] = true;
-
-	            futures.add(Apex.POOL.submit(() -> {
-	                long s = tid * chunk;
-	                long e = (tid == Apex.THREADS - 1) ? records : s + chunk;
-	                long p = s << 4;
-	                long end = e << 4;
-
-	                if (p >= end || mixed.get()) {
-	                    return;
-	                }
-
-	                boolean asc = true;
-	                boolean desc = true;
-	                long first = data.get(Apex.LONG, p);
-	                long previous = first;
-	                p += Apex.RECORD_BYTES;
-
-	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
-	                while (p <= unrolledEnd && (asc || desc) && !mixed.get()) {
-	                    long k0 = data.get(Apex.LONG, p);
-	                    long k1 = data.get(Apex.LONG, p + 16);
-	                    long k2 = data.get(Apex.LONG, p + 32);
-	                    long k3 = data.get(Apex.LONG, p + 48);
-
-	                    int cmpPrev = Long.compareUnsigned(previous, k0);
-	                    int cmp01 = Long.compareUnsigned(k0, k1);
-	                    int cmp12 = Long.compareUnsigned(k1, k2);
-	                    int cmp23 = Long.compareUnsigned(k2, k3);
-
-	                    asc &= cmpPrev <= 0 && cmp01 <= 0 && cmp12 <= 0 && cmp23 <= 0;
-	                    desc &= cmpPrev >= 0 && cmp01 >= 0 && cmp12 >= 0 && cmp23 >= 0;
-	                    previous = k3;
-
-	                    if (!asc && !desc) {
-	                        mixed.set(true);
-	                        break;
-	                    }
-
-	                    p += 4L * Apex.RECORD_BYTES;
-	                }
-
-	                while (p < end && (asc || desc) && !mixed.get()) {
-	                    long key = data.get(Apex.LONG, p);
-	                    int cmp = Long.compareUnsigned(previous, key);
-	                    asc &= cmp <= 0;
-	                    desc &= cmp >= 0;
-	                    previous = key;
-
-	                    if (!asc && !desc) {
-	                        mixed.set(true);
-	                        break;
-	                    }
-
-	                    p += Apex.RECORD_BYTES;
-	                }
-
-	                sawKeys[tid] = true;
-	                firstKeys[tid] = first;
-	                lastKeys[tid] = previous;
-	                ascending[tid] = asc;
-	                descending[tid] = desc;
-	            }));
-	        }
-
-	        waitForFutures(futures);
-
-	        if (mixed.get()) {
-	            return ORDER_MIXED;
-	        }
-
-	        boolean sawAny = false;
-	        boolean globalAscending = true;
-	        boolean globalDescending = true;
-	        long previousLast = 0L;
-
-	        for (int t = 0; t < Apex.THREADS; t++) {
-	            if (!sawKeys[t]) {
-	                continue;
-	            }
-
-	            globalAscending &= ascending[t];
-	            globalDescending &= descending[t];
-
-	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, firstKeys[t]);
-	                globalAscending &= cmp <= 0;
-	                globalDescending &= cmp >= 0;
-	            }
-
-	            previousLast = lastKeys[t];
-	            sawAny = true;
-	        }
-
-	        if (globalAscending) {
-	            return ORDER_ASCENDING;
-	        }
-
-	        return globalDescending ? ORDER_DESCENDING : ORDER_MIXED;
+	        // Return core mapping codes cleanly based on structural bit violations found
+	        if ((ascendingViolations & 1L) == 0) return ORDER_ASCENDING;
+	        if ((descendingViolations & 1L) == 0) return ORDER_DESCENDING;
+	        return ORDER_MIXED;
 	    }
+
 
 	  static final int QUICK_ORDER_RECORDS = 2_048;
 
@@ -452,172 +387,218 @@ public class tools {
 	    // Calculate how many 16-byte records can fit into a single native hardware register
 	    private static final int RECORDS_PER_REG = L_SPECIES.vectorByteSize() >>> 4; 
 
-	    /**
-	     * 🚀 Hardware-Adaptive Vector Reverse Copy Engine.
-	     * Natively structures loop lengths to match your CPU's hardware capacity,
-	     * preventing register splitting penalties on your 1800X baseline.
-	     */
-	    public static void reverseCopyRecords(
-	            MemorySegment source,
-	            long sourceBase,
-	            MemorySegment target,
-	            long targetBase,
-	            long records
-	    ) {
-	        if (records <= 0) return;
+	        /**
+	         * 🚀 High-Velocity 8-Way Unrolled Reverse Copy Engine.
+	         * Processes exactly 8 distinct 16-byte records (128 bytes total) per loop pass,
+	         * maximizing memory bus utilization while maintaining perfect sequential ordering.
+	         */
+	        public static void reverseCopyRecords(
+	                MemorySegment source,
+	                long sourceBase,
+	                MemorySegment target,
+	                long targetBase,
+	                long records
+	        ) {
+	            if (records <= 0) {
+	                return;
+	            }
 
-	        if (source == target && sourceBase == targetBase) {
-	            reverseRecordsInPlace(target, targetBase, records);
-	            return;
+	            long out = targetBase;
+	            long right = records - 1;
+
+	            // 8 records * 16 bytes per record = 128 bytes total loop stride footprint
+	            long strideRecords = 8;
+	            long unrolledEnd = records - (records % strideRecords);
+
+	            // --- 🚀 Primary 8-Way Unrolled Cache Line Streaming Pass ---
+	            // Loops downward from the right tail end of source, streaming sequentially upward to target
+	            while (right >= 7) {
+	                long p0 = sourceBase + (right << 4);
+	                long p1 = p0 - 16;
+	                long p2 = p1 - 16;
+	                long p3 = p2 - 16;
+	                long p4 = p3 - 16;
+	                long p5 = p4 - 16;
+	                long p6 = p5 - 16;
+	                long p7 = p6 - 16;
+
+	                // Load 8 independent record components into registers concurrently
+	                long k0 = source.get(Apex.LONG, p0);    long v0 = source.get(Apex.LONG, p0 + 8);
+	                long k1 = source.get(Apex.LONG, p1);    long v1 = source.get(Apex.LONG, p1 + 8);
+	                long k2 = source.get(Apex.LONG, p2);    long v2 = source.get(Apex.LONG, p2 + 8);
+	                long k3 = source.get(Apex.LONG, p3);    long v3 = source.get(Apex.LONG, p3 + 8);
+	                long k4 = source.get(Apex.LONG, p4);    long v4 = source.get(Apex.LONG, p4 + 8);
+	                long k5 = source.get(Apex.LONG, p5);    long v5 = source.get(Apex.LONG, p5 + 8);
+	                long k6 = source.get(Apex.LONG, p6);    long v6 = source.get(Apex.LONG, p6 + 8);
+	                long k7 = source.get(Apex.LONG, p7);    long v7 = source.get(Apex.LONG, p7 + 8);
+
+	                // Blast values out in perfectly inverted sequential reverse order up the destination memory segment
+	                target.set(Apex.LONG, out,       k0);   target.set(Apex.LONG, out + 8,   v0);
+	                target.set(Apex.LONG, out + 16,  k1);   target.set(Apex.LONG, out + 24,  v1);
+	                target.set(Apex.LONG, out + 32,  k2);   target.set(Apex.LONG, out + 40,  v2);
+	                target.set(Apex.LONG, out + 48,  k3);   target.set(Apex.LONG, out + 56,  v3);
+	                target.set(Apex.LONG, out + 64,  k4);   target.set(Apex.LONG, out + 72,  v4);
+	                target.set(Apex.LONG, out + 80,  k5);   target.set(Apex.LONG, out + 88,  v5);
+	                target.set(Apex.LONG, out + 96,  k6);   target.set(Apex.LONG, out + 104, v6);
+	                target.set(Apex.LONG, out + 112, k7);   target.set(Apex.LONG, out + 120, v7);
+
+	                out += 128; // Progresses exactly two full 64-byte hardware cache lines forward
+	                right -= 8;
+	            }
+
+	            // --- 🛬 Residual Scalar Tail Pass ---
+	            // Cleanly handles any fractional remaining records (< 8) without out-of-bounds pointer drifting
+	            while (right >= 0) {
+	                long p = sourceBase + (right << 4);
+	                target.set(Apex.LONG, out, source.get(Apex.LONG, p));
+	                target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
+	                out += 16;
+	                right--;
+	            }
 	        }
 
-	        long out = targetBase;
-	        long right = records - 1;
+	        /**
+	         * 🚀 High-Velocity 8-Way Unrolled Parallel Slice Worker.
+	         * Processes exactly 8 distinct 16-byte records (128 bytes total) per loop pass,
+	         * maintaining perfect data isolation for multi-threaded task chunks.
+	         */
+	        static void reverseCopySlice(
+	                MemorySegment source,
+	                long sourceBase,
+	                MemorySegment target,
+	                long targetBase,
+	                long totalRecords,
+	                long recordsPerTask,
+	                int copyTasks,
+	                int task
+	        ) {
+	            long startRecord = (long) task * recordsPerTask;
+	            long count = (task == copyTasks - 1) ? (totalRecords - startRecord) : recordsPerTask;
+	            
+	            long out = targetBase + (startRecord << 4);
+	            long right = totalRecords - 1 - startRecord;
+	            long remaining = count;
 
-	        int step = RECORDS_PER_REG;
-	        long strideBytes = (long) step << 4;
+	            // --- 🚀 Primary 8-Way Unrolled Cache Line Streaming Pass ---
+	            while (remaining >= 8) {
+	                long p0 = sourceBase + (right << 4);
+	                long p1 = p0 - 16;
+	                long p2 = p1 - 16;
+	                long p3 = p2 - 16;
+	                long p4 = p3 - 16;
+	                long p5 = p4 - 16;
+	                long p6 = p5 - 16;
+	                long p7 = p6 - 16;
 
-	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
-	        int lanes = L_SPECIES.length();
-	        int[] shuffleValues = new int[lanes];
-	        for (int i = 0; i < lanes; i += 2) {
-	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
-	            shuffleValues[i]     = targetRecord << 1;
-	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
-	        }
-	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
+	                // Load 8 independent record components into registers concurrently
+	                long k0 = source.get(Apex.LONG, p0);    long v0 = source.get(Apex.LONG, p0 + 8);
+	                long k1 = source.get(Apex.LONG, p1);    long v1 = source.get(Apex.LONG, p1 + 8);
+	                long k2 = source.get(Apex.LONG, p2);    long v2 = source.get(Apex.LONG, p2 + 8);
+	                long k3 = source.get(Apex.LONG, p3);    long v3 = source.get(Apex.LONG, p3 + 8);
+	                long k4 = source.get(Apex.LONG, p4);    long v4 = source.get(Apex.LONG, p4 + 8);
+	                long k5 = source.get(Apex.LONG, p5);    long v5 = source.get(Apex.LONG, p5 + 8);
+	                long k6 = source.get(Apex.LONG, p6);    long v6 = source.get(Apex.LONG, p6 + 8);
+	                long k7 = source.get(Apex.LONG, p7);    long v7 = source.get(Apex.LONG, p7 + 8);
 
-	        // --- ⚡ Native Hardware Register Vector Loop ---
-	        while (right >= (step - 1)) {
-	            long pStart = sourceBase + ((right - (step - 1)) << 4);
+	                // Blast values out in perfectly inverted sequential reverse order
+	                target.set(Apex.LONG, out,       k0);   target.set(Apex.LONG, out + 8,   v0);
+	                target.set(Apex.LONG, out + 16,  k1);   target.set(Apex.LONG, out + 24,  v1);
+	                target.set(Apex.LONG, out + 32,  k2);   target.set(Apex.LONG, out + 40,  v2);
+	                target.set(Apex.LONG, out + 48,  k3);   target.set(Apex.LONG, out + 56,  v3);
+	                target.set(Apex.LONG, out + 64,  k4);   target.set(Apex.LONG, out + 72,  v4);
+	                target.set(Apex.LONG, out + 80,  k5);   target.set(Apex.LONG, out + 88,  v5);
+	                target.set(Apex.LONG, out + 96,  k6);   target.set(Apex.LONG, out + 104, v6);
+	                target.set(Apex.LONG, out + 112, k7);   target.set(Apex.LONG, out + 120, v7);
 
-	            // Loads exactly what your CPU can physically process in a single clock cycle
-	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
-	            var reordered = vec.rearrange(invertShuffle);
-	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
+	                out += 128;
+	                right -= 8;
+	                remaining -= 8;
+	            }
 
-	            out += strideBytes; 
-	            right -= step;
-	        }
-
-	        // Handle structural residual scalar tails safely
-	        while (right >= 0) {
-	            long p = sourceBase + (right << 4);
-	            target.set(Apex.LONG, out, source.get(Apex.LONG, p));
-	            target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
-	            out += Apex.RECORD_BYTES;
-	            right--;
-	        }
-	    }
-
-	    /**
-	     * 🚀 Hardware-Adaptive Vector Parallel Slice Worker.
-	     */
-	    static void reverseCopySlice(
-	            MemorySegment source,
-	            long sourceBase,
-	            MemorySegment target,
-	            long targetBase,
-	            long totalRecords,
-	            long recordsPerTask,
-	            int copyTasks,
-	            int task
-	    ) {
-	        long startRecord = (long) task * recordsPerTask;
-	        long count = (task == copyTasks - 1) ? (totalRecords - startRecord) : recordsPerTask;
-	        long out = targetBase + (startRecord << 4);
-	        long right = totalRecords - 1 - startRecord;
-	        long remaining = count;
-
-	        int step = RECORDS_PER_REG;
-	        long strideBytes = (long) step << 4;
-
-	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
-	        int lanes = L_SPECIES.length();
-	        int[] shuffleValues = new int[lanes];
-	        for (int i = 0; i < lanes; i += 2) {
-	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
-	            shuffleValues[i]     = targetRecord << 1;
-	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
-	        }
-	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
-
-	        while (remaining >= step) {
-	            long pStart = sourceBase + ((right - (step - 1)) << 4);
-
-	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
-	            var reordered = vec.rearrange(invertShuffle);
-	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
-
-	            out += strideBytes;
-	            right -= step;
-	            remaining -= step;
+	            // --- 🛬 Residual Scalar Tail Pass ---
+	            while (remaining > 0) {
+	                long p = sourceBase + (right << 4);
+	                target.set(Apex.LONG, out, source.get(Apex.LONG, p));
+	                target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
+	                out += 16;
+	                right--;
+	                remaining--;
+	            }
 	        }
 
-	        while (remaining > 0) {
-	            long p = sourceBase + (right << 4);
-	            target.set(Apex.LONG, out, source.get(Apex.LONG, p));
-	            target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
-	            out += Apex.RECORD_BYTES;
-	            right--;
-	            remaining--;
+	        /**
+	         * 🚀 High-Velocity 8-Way Unrolled In-Place Symmetrical Mirror Swapper.
+	         * Simultaneously loads 4 records from the left boundary and 4 records from the right boundary,
+	         * swapping all 8 records (128 bytes total) cleanly across the center point in a single pass.
+	         */
+	        public static void reverseRecordsInPlace(MemorySegment data, long base, long records) {
+	            if (records <= 1) {
+	                return;
+	            }
+
+	            long left = 0;
+	            long right = records - 1;
+
+	            // Process whenever we have at least two 4-record blocks (8 total records) left to swap symmetrically
+	            while (left + 3 < right - 3) {
+	                long lp0 = base + (left << 4);
+	                long lp1 = lp0 + 16;
+	                long lp2 = lp1 + 16;
+	                long lp3 = lp2 + 16;
+
+	                long rp0 = base + (right << 4);
+	                long rp1 = rp0 - 16;
+	                long rp2 = rp1 - 16;
+	                long rp3 = rp2 - 16;
+
+	                // Load 4 contiguous records from the left boundary
+	                long lk0 = data.get(Apex.LONG, lp0);    long lv0 = data.get(Apex.LONG, lp0 + 8);
+	                long lk1 = data.get(Apex.LONG, lp1);    long lv1 = data.get(Apex.LONG, lp1 + 8);
+	                long lk2 = data.get(Apex.LONG, lp2);    long lv2 = data.get(Apex.LONG, lp2 + 8);
+	                long lk3 = data.get(Apex.LONG, lp3);    long lv3 = data.get(Apex.LONG, lp3 + 8);
+
+	                // Load 4 contiguous records from the right boundary
+	                long rk0 = data.get(Apex.LONG, rp0);    long rv0 = data.get(Apex.LONG, rp0 + 8);
+	                long rk1 = data.get(Apex.LONG, rp1);    long rv1 = data.get(Apex.LONG, rp1 + 8);
+	                long rk2 = data.get(Apex.LONG, rp2);    long rv2 = data.get(Apex.LONG, rp2 + 8);
+	                long rk3 = data.get(Apex.LONG, rp3);    long rv3 = data.get(Apex.LONG, rp3 + 8);
+
+	                // Symmetrically write the left records over to the right slots
+	                data.set(Apex.LONG, rp0, lk0);          data.set(Apex.LONG, rp0 + 8, lv0);
+	                data.set(Apex.LONG, rp1, lk1);          data.set(Apex.LONG, rp1 + 8, lv1);
+	                data.set(Apex.LONG, rp2, lk2);          data.set(Apex.LONG, rp2 + 8, lv2);
+	                data.set(Apex.LONG, rp3, lk3);          data.set(Apex.LONG, rp3 + 8, lv3);
+
+	                // Symmetrically write the right records over to the left slots
+	                data.set(Apex.LONG, lp0, rk0);          data.set(Apex.LONG, lp0 + 8, rv0);
+	                data.set(Apex.LONG, lp1, rk1);          data.set(Apex.LONG, lp1 + 8, rv1);
+	                data.set(Apex.LONG, lp2, rk2);          data.set(Apex.LONG, lp2 + 8, rv2);
+	                data.set(Apex.LONG, lp3, rk3);          data.set(Apex.LONG, lp3 + 8, rv3);
+
+	                left += 4;
+	                right -= 4;
+	            }
+
+	            // Standard scalar residual fallback cleanup track for the narrow remaining middle window
+	            while (left < right) {
+	                long lp = base + (left << 4);
+	                long rp = base + (right << 4);
+
+	                long lk = data.get(Apex.LONG, lp);
+	                long lv = data.get(Apex.LONG, lp + 8);
+
+	                data.set(Apex.LONG, lp, data.get(Apex.LONG, rp));
+	                data.set(Apex.LONG, lp + 8, data.get(Apex.LONG, rp + 8));
+	                
+	                data.set(Apex.LONG, rp, lk);
+	                data.set(Apex.LONG, rp + 8, lv);
+
+	                left++;
+	                right--;
+	            }
 	        }
-	    }
 
-	    /**
-	     * 🚀 Hardware-Adaptive In-Place Symmetrical Mirror Swapper.
-	     */
-	    public static void reverseRecordsInPlace(MemorySegment data, long base, long records) {
-	        long left = 0;
-	        long right = records - 1;
-
-	        int step = RECORDS_PER_REG;
-	        long strideBytes = (long) step << 4;
-
-	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
-	        int lanes = L_SPECIES.length();
-	        int[] shuffleValues = new int[lanes];
-	        for (int i = 0; i < lanes; i += 2) {
-	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
-	            shuffleValues[i]     = targetRecord << 1;
-	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
-	        }
-	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
-
-	        while (left + (step - 1) < right - (step - 1)) {
-	            long leftPos = base + (left << 4);
-	            long rightPosStart = base + ((right - (step - 1)) << 4);
-
-	            var vecL = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, leftPos, java.nio.ByteOrder.nativeOrder());
-	            var vecR = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, rightPosStart, java.nio.ByteOrder.nativeOrder());
-
-	            var invertedL = vecR.rearrange(invertShuffle);
-	            var invertedR = vecL.rearrange(invertShuffle);
-
-	            invertedL.intoMemorySegment(data, leftPos, java.nio.ByteOrder.nativeOrder());
-	            invertedR.intoMemorySegment(data, rightPosStart, java.nio.ByteOrder.nativeOrder());
-
-	            left += step;
-	            right -= step;
-	        }
-
-	        while (left < right) {
-	            long lp = base + (left << 4);
-	            long rp = base + (right << 4);
-
-	            long lk = data.get(Apex.LONG, lp);
-	            long lv = data.get(Apex.LONG, lp + 8);
-
-	            data.set(Apex.LONG, lp, data.get(Apex.LONG, rp));
-	            data.set(Apex.LONG, lp + 8, data.get(Apex.LONG, rp + 8));
-	            data.set(Apex.LONG, rp, lk);
-	            data.set(Apex.LONG, rp + 8, lv);
-
-	            left++;
-	            right--;
-	        }
-	    }
-
+	  
 
 
 

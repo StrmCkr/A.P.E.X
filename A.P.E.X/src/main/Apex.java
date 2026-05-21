@@ -212,7 +212,7 @@ public class Apex {
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;
-   public static final long DEFAULT_RECORDS = 100_000_000L;
+   public static final long DEFAULT_RECORDS = 10_000_000L;
    public static final long TUNE_RECORDS = 10_000_000L;
    public static final long WARMUP_RECORDS = 100_000_000L;
    public static int MAX_HEAP_SCRATCH_RECORDS = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
