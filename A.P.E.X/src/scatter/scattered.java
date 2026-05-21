@@ -65,147 +65,120 @@ public class scattered {
                 long end = e << 4;
                 long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
 
+                // --- 🛡️ 64-Byte Software Write-Combining Buffers ---
+                // Private thread-local matrices capture elements before hitting the memory bus
+                int numBuckets = cfg.msdBucketCount;
+                long[][] bufferK = new long[numBuckets][4];
+                long[][] bufferV = new long[numBuckets][4];
+                int[] bufferCounts = new int[numBuckets];
+
+                // --- 🚀 Stride Phase: Global MSD Out-of-Place Shuffling Track ---
                 if (!hasLocalMsd) {
-                while (p <= unrolledEnd) {
-                    long k0 = src.get(Apex.LONG, p);      long v0 = src.get(Apex.LONG, p + 8);
-                    long k1 = src.get(Apex.LONG, p + 16);     long v1 = src.get(Apex.LONG, p + 24);
-                    long k2 = src.get(Apex.LONG, p + 32);     long v2 = src.get(Apex.LONG, p + 40);
-                    long k3 = src.get(Apex.LONG, p + 48);     long v3 = src.get(Apex.LONG, p + 56);
+                    while (p <= unrolledEnd) {
+                        long k0 = src.get(Apex.LONG, p);          long v0 = src.get(Apex.LONG, p + 8);
+                        long k1 = src.get(Apex.LONG, p + 16);     long v1 = src.get(Apex.LONG, p + 24);
+                        long k2 = src.get(Apex.LONG, p + 32);     long v2 = src.get(Apex.LONG, p + 40);
+                        long k3 = src.get(Apex.LONG, p + 48);     long v3 = src.get(Apex.LONG, p + 56);
 
-                    int b0 = (int) ((k0 >>> msdShift) & bucketMask);
-                    int b1 = (int) ((k1 >>> msdShift) & bucketMask);
-                    int b2 = (int) ((k2 >>> msdShift) & bucketMask);
-                    int b3 = (int) ((k3 >>> msdShift) & bucketMask);
+                        int b0 = (int) ((k0 >>> msdShift) & bucketMask);
+                        int b1 = (int) ((k1 >>> msdShift) & bucketMask);
+                        int b2 = (int) ((k2 >>> msdShift) & bucketMask);
+                        int b3 = (int) ((k3 >>> msdShift) & bucketMask);
 
-                    long q0 = (bucketStarts[b0] + out[b0]) << 4;
-                    out[b0]++;
-                    dst.set(Apex.LONG, q0, k0);
-                    dst.set(Apex.LONG, q0 + 8, v0);
+                        // Stage Record 0 inside the local buffer
+                        int idx0 = bufferCounts[b0];
+                        bufferK[b0][idx0] = k0; bufferV[b0][idx0] = v0;
+                        if (++bufferCounts[b0] == 4) {
+                            long q = (bucketStarts[b0] + out[b0]) << 4; out[b0] += 4;
+                            dst.set(Apex.LONG, q,      bufferK[b0][0]); dst.set(Apex.LONG, q + 8,   bufferV[b0][0]);
+                            dst.set(Apex.LONG, q + 16, bufferK[b0][1]); dst.set(Apex.LONG, q + 24,  bufferV[b0][1]);
+                            dst.set(Apex.LONG, q + 32, bufferK[b0][2]); dst.set(Apex.LONG, q + 40,  bufferV[b0][2]);
+                            dst.set(Apex.LONG, q + 48, bufferK[b0][3]); dst.set(Apex.LONG, q + 56,  bufferV[b0][3]);
+                            bufferCounts[b0] = 0;
+                        }
 
-                    long q1 = (bucketStarts[b1] + out[b1]) << 4;
-                    out[b1]++;
-                    dst.set(Apex.LONG, q1, k1);
-                    dst.set(Apex.LONG, q1 + 8, v1);
+                        // Stage Record 1 inside the local buffer
+                        int idx1 = bufferCounts[b1];
+                        bufferK[b1][idx1] = k1; bufferV[b1][idx1] = v1;
+                        if (++bufferCounts[b1] == 4) {
+                            long q = (bucketStarts[b1] + out[b1]) << 4; out[b1] += 4;
+                            dst.set(Apex.LONG, q,      bufferK[b1][0]); dst.set(Apex.LONG, q + 8,   bufferV[b1][0]);
+                            dst.set(Apex.LONG, q + 16, bufferK[b1][1]); dst.set(Apex.LONG, q + 24,  bufferV[b1][1]);
+                            dst.set(Apex.LONG, q + 32, bufferK[b1][2]); dst.set(Apex.LONG, q + 40,  bufferV[b1][2]);
+                            dst.set(Apex.LONG, q + 48, bufferK[b1][3]); dst.set(Apex.LONG, q + 56,  bufferV[b1][3]);
+                            bufferCounts[b1] = 0;
+                        }
 
-                    long q2 = (bucketStarts[b2] + out[b2]) << 4;
-                    out[b2]++;
-                    dst.set(Apex.LONG, q2, k2);
-                    dst.set(Apex.LONG, q2 + 8, v2);
+                        // Stage Record 2 inside the local buffer
+                        int idx2 = bufferCounts[b2];
+                        bufferK[b2][idx2] = k2; bufferV[b2][idx2] = v2;
+                        if (++bufferCounts[b2] == 4) {
+                            long q = (bucketStarts[b2] + out[b2]) << 4; out[b2] += 4;
+                            dst.set(Apex.LONG, q,      bufferK[b2][0]); dst.set(Apex.LONG, q + 8,   bufferV[b2][0]);
+                            dst.set(Apex.LONG, q + 16, bufferK[b2][1]); dst.set(Apex.LONG, q + 24,  bufferV[b2][1]);
+                            dst.set(Apex.LONG, q + 32, bufferK[b2][2]); dst.set(Apex.LONG, q + 40,  bufferV[b2][2]);
+                            dst.set(Apex.LONG, q + 48, bufferK[b2][3]); dst.set(Apex.LONG, q + 56,  bufferV[b2][3]);
+                            bufferCounts[b2] = 0;
+                        }
 
-                    long q3 = (bucketStarts[b3] + out[b3]) << 4;
-                    out[b3]++;
-                    dst.set(Apex.LONG, q3, k3);
-                    dst.set(Apex.LONG, q3 + 8, v3);
+                        // Stage Record 3 inside the local buffer
+                        int idx3 = bufferCounts[b3];
+                        bufferK[b3][idx3] = k3; bufferV[b3][idx3] = v3;
+                        if (++bufferCounts[b3] == 4) {
+                            long q = (bucketStarts[b3] + out[b3]) << 4; out[b3] += 4;
+                            dst.set(Apex.LONG, q,      bufferK[b3][0]); dst.set(Apex.LONG, q + 8,   bufferV[b3][0]);
+                            dst.set(Apex.LONG, q + 16, bufferK[b3][1]); dst.set(Apex.LONG, q + 24,  bufferV[b3][1]);
+                            dst.set(Apex.LONG, q + 32, bufferK[b3][2]); dst.set(Apex.LONG, q + 40,  bufferV[b3][2]);
+                            dst.set(Apex.LONG, q + 48, bufferK[b3][3]); dst.set(Apex.LONG, q + 56,  bufferV[b3][3]);
+                            bufferCounts[b3] = 0;
+                        }
 
-                    p += 4L * Apex.RECORD_BYTES;
-                }
+                        p += 4L * Apex.RECORD_BYTES;
+                    }
 
-                while (p < end) {
-                    long k = src.get(Apex.LONG, p);
-                    long v = src.get(Apex.LONG, p + 8);
+                    // Process trailing cleanup records using the same buffer staging layers
+                    while (p < end) {
+                        long k = src.get(Apex.LONG, p); long v = src.get(Apex.LONG, p + 8);
+                        int b = (int) ((k >>> msdShift) & bucketMask);
+                        int idx = bufferCounts[b];
+                        bufferK[b][idx] = k; bufferV[b][idx] = v;
+                        if (++bufferCounts[b] == 4) {
+                            long q = (bucketStarts[b] + out[b]) << 4; out[b] += 4;
+                            dst.set(Apex.LONG, q,      bufferK[b][0]); dst.set(Apex.LONG, q + 8,   bufferV[b][0]);
+                            dst.set(Apex.LONG, q + 16, bufferK[b][1]); dst.set(Apex.LONG, q + 24,  bufferV[b][1]);
+                            dst.set(Apex.LONG, q + 32, bufferK[b][2]); dst.set(Apex.LONG, q + 40,  bufferV[b][2]);
+                            dst.set(Apex.LONG, q + 48, bufferK[b][3]); dst.set(Apex.LONG, q + 56,  bufferV[b][3]);
+                            bufferCounts[b] = 0;
+                        }
+                        p += Apex.RECORD_BYTES;
+                    }
 
-                    int b = (int) ((k >>> msdShift) & bucketMask);
-                    long q = (bucketStarts[b] + out[b]) << 4;
-                    out[b]++;
-
-                    dst.set(Apex.LONG, q, k);
-                    dst.set(Apex.LONG, q + 8, v);
-
-                    p += Apex.RECORD_BYTES;
-                }
+                    // --- 🧹 FINAL FLUSH PHASE: Flush any remaining partially filled buffers out to dst ---
+                    for (int b = 0; b < numBuckets; b++) {
+                        int remaining = bufferCounts[b];
+                        for (int i = 0; i < remaining; i++) {
+                            long q = (bucketStarts[b] + out[b]) << 4; out[b]++;
+                            dst.set(Apex.LONG, q, bufferK[b][i]);
+                            dst.set(Apex.LONG, q + 8, bufferV[b][i]);
+                        }
+                    }
                     return;
                 }
 
-                while (p <= unrolledEnd) {
-                    long k0 = src.get(Apex.LONG, p);      long v0 = src.get(Apex.LONG, p + 8);
-                    long k1 = src.get(Apex.LONG, p + 16);     long v1 = src.get(Apex.LONG, p + 24);
-                    long k2 = src.get(Apex.LONG, p + 32);     long v2 = src.get(Apex.LONG, p + 40);
-                    long k3 = src.get(Apex.LONG, p + 48);     long v3 = src.get(Apex.LONG, p + 56);
-
-                    int b0 = (int) ((k0 >>> msdShift) & bucketMask);
-                    int b1 = (int) ((k1 >>> msdShift) & bucketMask);
-                    int b2 = (int) ((k2 >>> msdShift) & bucketMask);
-                    int b3 = (int) ((k3 >>> msdShift) & bucketMask);
-
-                    int localShift0 = localMsdShifts[b0];
-                    long q0;
-                    if (localShift0 >= 0) {
-                        int child = (int) ((k0 >>> localShift0) & bucketMask);
-                        int[] childOut = localThreadOffsets[b0][tid];
-                        q0 = (localStarts[b0][child] + childOut[child]) << 4;
-                        childOut[child]++;
-                    } else {
-                        q0 = (bucketStarts[b0] + out[b0]) << 4;
-                        out[b0]++;
-                    }
-                    dst.set(Apex.LONG, q0, k0);
-                    dst.set(Apex.LONG, q0 + 8, v0);
-
-                    int localShift1 = localMsdShifts[b1];
-                    long q1;
-                    if (localShift1 >= 0) {
-                        int child = (int) ((k1 >>> localShift1) & bucketMask);
-                        int[] childOut = localThreadOffsets[b1][tid];
-                        q1 = (localStarts[b1][child] + childOut[child]) << 4;
-                        childOut[child]++;
-                    } else {
-                        q1 = (bucketStarts[b1] + out[b1]) << 4;
-                        out[b1]++;
-                    }
-                    dst.set(Apex.LONG, q1, k1);
-                    dst.set(Apex.LONG, q1 + 8, v1);
-
-                    int localShift2 = localMsdShifts[b2];
-                    long q2;
-                    if (localShift2 >= 0) {
-                        int child = (int) ((k2 >>> localShift2) & bucketMask);
-                        int[] childOut = localThreadOffsets[b2][tid];
-                        q2 = (localStarts[b2][child] + childOut[child]) << 4;
-                        childOut[child]++;
-                    } else {
-                        q2 = (bucketStarts[b2] + out[b2]) << 4;
-                        out[b2]++;
-                    }
-                    dst.set(Apex.LONG, q2, k2);
-                    dst.set(Apex.LONG, q2 + 8, v2);
-
-                    int localShift3 = localMsdShifts[b3];
-                    long q3;
-                    if (localShift3 >= 0) {
-                        int child = (int) ((k3 >>> localShift3) & bucketMask);
-                        int[] childOut = localThreadOffsets[b3][tid];
-                        q3 = (localStarts[b3][child] + childOut[child]) << 4;
-                        childOut[child]++;
-                    } else {
-                        q3 = (bucketStarts[b3] + out[b3]) << 4;
-                        out[b3]++;
-                    }
-                    dst.set(Apex.LONG, q3, k3);
-                    dst.set(Apex.LONG, q3 + 8, v3);
-
-                    p += 4L * Apex.RECORD_BYTES;
-                }
-
+                // --- 🚀 Slower Local MSD Hierarchical Child Track (Fallback Scalar Channels) ---
                 while (p < end) {
-                    long k = src.get(Apex.LONG, p);
-                    long v = src.get(Apex.LONG, p + 8);
-
+                    long k = src.get(Apex.LONG, p); long v = src.get(Apex.LONG, p + 8);
                     int b = (int) ((k >>> msdShift) & bucketMask);
                     int localShift = localMsdShifts[b];
                     long q;
-
                     if (localShift >= 0) {
                         int child = (int) ((k >>> localShift) & bucketMask);
                         int[] childOut = localThreadOffsets[b][tid];
-                        q = (localStarts[b][child] + childOut[child]) << 4;
-                        childOut[child]++;
+                        q = (localStarts[b][child] + childOut[child]) << 4; childOut[child]++;
                     } else {
-                        q = (bucketStarts[b] + out[b]) << 4;
-                        out[b]++;
+                        q = (bucketStarts[b] + out[b]) << 4; out[b]++;
                     }
-
-                    dst.set(Apex.LONG, q, k);
-                    dst.set(Apex.LONG, q + 8, v);
+                    dst.set(Apex.LONG, q, k); dst.set(Apex.LONG, q + 8, v);
                     p += Apex.RECORD_BYTES;
                 }
             }));
@@ -213,6 +186,7 @@ public class scattered {
 
         tools.waitForFutures(futures);
     }
+
 
     static void settleRecord(
             MemorySegment data,

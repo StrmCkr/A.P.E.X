@@ -394,6 +394,16 @@ public class tools {
 	        MemorySegment.copy(source, sourceBase + offset, target, targetBase + offset, count * Apex.RECORD_BYTES);
 	    }
 
+	    // 🚀 Hardware-Adaptive Species Selector: Autotunes to 256-bit on 1800X, scales to 512-bit on 7950X
+	    private static final jdk.incubator.vector.VectorSpecies<Long> L_SPECIES = jdk.incubator.vector.LongVector.SPECIES_PREFERRED;
+	    // Calculate how many 16-byte records can fit into a single native hardware register
+	    private static final int RECORDS_PER_REG = L_SPECIES.vectorByteSize() >>> 4; 
+
+	    /**
+	     * 🚀 Hardware-Adaptive Vector Reverse Copy Engine.
+	     * Natively structures loop lengths to match your CPU's hardware capacity,
+	     * preventing register splitting penalties on your 1800X baseline.
+	     */
 	    public static void reverseCopyRecords(
 	            MemorySegment source,
 	            long sourceBase,
@@ -401,79 +411,43 @@ public class tools {
 	            long targetBase,
 	            long records
 	    ) {
-	        if (records <= 1) {
-	            if (records == 1 && (source != target || sourceBase != targetBase)) {
-	                MemorySegment.copy(source, sourceBase, target, targetBase, Apex.RECORD_BYTES);
-	            }
-	            return;
-	        }
+	        if (records <= 0) return;
 
 	        if (source == target && sourceBase == targetBase) {
 	            reverseRecordsInPlace(target, targetBase, records);
 	            return;
 	        }
 
-	        if (Apex.POOL != null && Apex.THREADS > 1 && records >= PARALLEL_COPY_MIN_RECORDS) {
-	            long sliceRecords = Math.max(1L, COPY_SLICE_RECORDS);
-	            int copyTasks = (int) Math.min(
-	                    (long) Apex.THREADS,
-	                    Math.max(1L, (records + sliceRecords - 1L) / sliceRecords)
-	            );
-
-	            if (copyTasks > 1) {
-	                long recordsPerTask = records / copyTasks;
-	                java.util.ArrayList<java.util.concurrent.Future<?>> loops =
-	                        new java.util.ArrayList<>(copyTasks - 1);
-
-	                for (int t = 1; t < copyTasks; t++) {
-	                    final int tid = t;
-	                    loops.add(Apex.POOL.submit(() -> {
-	                        reverseCopySlice(source, sourceBase, target, targetBase, records, recordsPerTask, copyTasks, tid);
-	                    }));
-	                }
-
-	                reverseCopySlice(source, sourceBase, target, targetBase, records, recordsPerTask, copyTasks, 0);
-
-	                try {
-	                    Tools.tools.waitForFutures(loops);
-	                } catch (Exception ex) {
-	                    throw new RuntimeException("Parallel reverse copy failed", ex);
-	                }
-	                return;
-	            }
-	        }
-
 	        long out = targetBase;
 	        long right = records - 1;
 
-	        while (right >= 3) {
-	            long p0 = sourceBase + (right << 4);
-	            long p1 = p0 - Apex.RECORD_BYTES;
-	            long p2 = p1 - Apex.RECORD_BYTES;
-	            long p3 = p2 - Apex.RECORD_BYTES;
+	        int step = RECORDS_PER_REG;
+	        long strideBytes = (long) step << 4;
 
-	            long k0 = source.get(Apex.LONG, p0);
-	            long v0 = source.get(Apex.LONG, p0 + 8);
-	            long k1 = source.get(Apex.LONG, p1);
-	            long v1 = source.get(Apex.LONG, p1 + 8);
-	            long k2 = source.get(Apex.LONG, p2);
-	            long v2 = source.get(Apex.LONG, p2 + 8);
-	            long k3 = source.get(Apex.LONG, p3);
-	            long v3 = source.get(Apex.LONG, p3 + 8);
+	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
+	        int lanes = L_SPECIES.length();
+	        int[] shuffleValues = new int[lanes];
+	        for (int i = 0; i < lanes; i += 2) {
+	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
+	            shuffleValues[i]     = targetRecord << 1;
+	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
+	        }
+	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
 
-	            target.set(Apex.LONG, out, k0);
-	            target.set(Apex.LONG, out + 8, v0);
-	            target.set(Apex.LONG, out + 16, k1);
-	            target.set(Apex.LONG, out + 24, v1);
-	            target.set(Apex.LONG, out + 32, k2);
-	            target.set(Apex.LONG, out + 40, v2);
-	            target.set(Apex.LONG, out + 48, k3);
-	            target.set(Apex.LONG, out + 56, v3);
+	        // --- ⚡ Native Hardware Register Vector Loop ---
+	        while (right >= (step - 1)) {
+	            long pStart = sourceBase + ((right - (step - 1)) << 4);
 
-	            out += 4L * Apex.RECORD_BYTES;
-	            right -= 4;
+	            // Loads exactly what your CPU can physically process in a single clock cycle
+	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
+	            var reordered = vec.rearrange(invertShuffle);
+	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
+
+	            out += strideBytes; 
+	            right -= step;
 	        }
 
+	        // Handle structural residual scalar tails safely
 	        while (right >= 0) {
 	            long p = sourceBase + (right << 4);
 	            target.set(Apex.LONG, out, source.get(Apex.LONG, p));
@@ -483,6 +457,9 @@ public class tools {
 	        }
 	    }
 
+	    /**
+	     * 🚀 Hardware-Adaptive Vector Parallel Slice Worker.
+	     */
 	    static void reverseCopySlice(
 	            MemorySegment source,
 	            long sourceBase,
@@ -499,33 +476,29 @@ public class tools {
 	        long right = totalRecords - 1 - startRecord;
 	        long remaining = count;
 
-	        while (remaining >= 4) {
-	            long p0 = sourceBase + (right << 4);
-	            long p1 = p0 - Apex.RECORD_BYTES;
-	            long p2 = p1 - Apex.RECORD_BYTES;
-	            long p3 = p2 - Apex.RECORD_BYTES;
+	        int step = RECORDS_PER_REG;
+	        long strideBytes = (long) step << 4;
 
-	            long k0 = source.get(Apex.LONG, p0);
-	            long v0 = source.get(Apex.LONG, p0 + 8);
-	            long k1 = source.get(Apex.LONG, p1);
-	            long v1 = source.get(Apex.LONG, p1 + 8);
-	            long k2 = source.get(Apex.LONG, p2);
-	            long v2 = source.get(Apex.LONG, p2 + 8);
-	            long k3 = source.get(Apex.LONG, p3);
-	            long v3 = source.get(Apex.LONG, p3 + 8);
+	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
+	        int lanes = L_SPECIES.length();
+	        int[] shuffleValues = new int[lanes];
+	        for (int i = 0; i < lanes; i += 2) {
+	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
+	            shuffleValues[i]     = targetRecord << 1;
+	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
+	        }
+	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
 
-	            target.set(Apex.LONG, out, k0);
-	            target.set(Apex.LONG, out + 8, v0);
-	            target.set(Apex.LONG, out + 16, k1);
-	            target.set(Apex.LONG, out + 24, v1);
-	            target.set(Apex.LONG, out + 32, k2);
-	            target.set(Apex.LONG, out + 40, v2);
-	            target.set(Apex.LONG, out + 48, k3);
-	            target.set(Apex.LONG, out + 56, v3);
+	        while (remaining >= step) {
+	            long pStart = sourceBase + ((right - (step - 1)) << 4);
 
-	            out += 4L * Apex.RECORD_BYTES;
-	            right -= 4;
-	            remaining -= 4;
+	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
+	            var reordered = vec.rearrange(invertShuffle);
+	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
+
+	            out += strideBytes;
+	            right -= step;
+	            remaining -= step;
 	        }
 
 	        while (remaining > 0) {
@@ -538,59 +511,41 @@ public class tools {
 	        }
 	    }
 
+	    /**
+	     * 🚀 Hardware-Adaptive In-Place Symmetrical Mirror Swapper.
+	     */
 	    public static void reverseRecordsInPlace(MemorySegment data, long base, long records) {
 	        long left = 0;
 	        long right = records - 1;
 
-	        while (left + 3 < right - 3) {
-	            long lp0 = base + (left << 4);
-	            long lp1 = lp0 + Apex.RECORD_BYTES;
-	            long lp2 = lp1 + Apex.RECORD_BYTES;
-	            long lp3 = lp2 + Apex.RECORD_BYTES;
+	        int step = RECORDS_PER_REG;
+	        long strideBytes = (long) step << 4;
 
-	            long rp0 = base + (right << 4);
-	            long rp1 = rp0 - Apex.RECORD_BYTES;
-	            long rp2 = rp1 - Apex.RECORD_BYTES;
-	            long rp3 = rp2 - Apex.RECORD_BYTES;
+	        // --- 🛡️ Fix applied: Converted laneCount() into length() ---
+	        int lanes = L_SPECIES.length();
+	        int[] shuffleValues = new int[lanes];
+	        for (int i = 0; i < lanes; i += 2) {
+	            int targetRecord = (lanes >>> 1) - 1 - (i >>> 1);
+	            shuffleValues[i]     = targetRecord << 1;
+	            shuffleValues[i + 1] = (targetRecord << 1) + 1;
+	        }
+	        var invertShuffle = jdk.incubator.vector.VectorShuffle.fromArray(L_SPECIES, shuffleValues, 0);
 
-	            long lk0 = data.get(Apex.LONG, lp0);
-	            long lv0 = data.get(Apex.LONG, lp0 + 8);
-	            long lk1 = data.get(Apex.LONG, lp1);
-	            long lv1 = data.get(Apex.LONG, lp1 + 8);
-	            long lk2 = data.get(Apex.LONG, lp2);
-	            long lv2 = data.get(Apex.LONG, lp2 + 8);
-	            long lk3 = data.get(Apex.LONG, lp3);
-	            long lv3 = data.get(Apex.LONG, lp3 + 8);
+	        while (left + (step - 1) < right - (step - 1)) {
+	            long leftPos = base + (left << 4);
+	            long rightPosStart = base + ((right - (step - 1)) << 4);
 
-	            long rk0 = data.get(Apex.LONG, rp0);
-	            long rv0 = data.get(Apex.LONG, rp0 + 8);
-	            long rk1 = data.get(Apex.LONG, rp1);
-	            long rv1 = data.get(Apex.LONG, rp1 + 8);
-	            long rk2 = data.get(Apex.LONG, rp2);
-	            long rv2 = data.get(Apex.LONG, rp2 + 8);
-	            long rk3 = data.get(Apex.LONG, rp3);
-	            long rv3 = data.get(Apex.LONG, rp3 + 8);
+	            var vecL = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, leftPos, java.nio.ByteOrder.nativeOrder());
+	            var vecR = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, rightPosStart, java.nio.ByteOrder.nativeOrder());
 
-	            data.set(Apex.LONG, lp0, rk0);
-	            data.set(Apex.LONG, lp0 + 8, rv0);
-	            data.set(Apex.LONG, lp1, rk1);
-	            data.set(Apex.LONG, lp1 + 8, rv1);
-	            data.set(Apex.LONG, lp2, rk2);
-	            data.set(Apex.LONG, lp2 + 8, rv2);
-	            data.set(Apex.LONG, lp3, rk3);
-	            data.set(Apex.LONG, lp3 + 8, rv3);
+	            var invertedL = vecR.rearrange(invertShuffle);
+	            var invertedR = vecL.rearrange(invertShuffle);
 
-	            data.set(Apex.LONG, rp0, lk0);
-	            data.set(Apex.LONG, rp0 + 8, lv0);
-	            data.set(Apex.LONG, rp1, lk1);
-	            data.set(Apex.LONG, rp1 + 8, lv1);
-	            data.set(Apex.LONG, rp2, lk2);
-	            data.set(Apex.LONG, rp2 + 8, lv2);
-	            data.set(Apex.LONG, rp3, lk3);
-	            data.set(Apex.LONG, rp3 + 8, lv3);
+	            invertedL.intoMemorySegment(data, leftPos, java.nio.ByteOrder.nativeOrder());
+	            invertedR.intoMemorySegment(data, rightPosStart, java.nio.ByteOrder.nativeOrder());
 
-	            left += 4;
-	            right -= 4;
+	            left += step;
+	            right -= step;
 	        }
 
 	        while (left < right) {
@@ -609,6 +564,9 @@ public class tools {
 	            right--;
 	        }
 	    }
+
+
+
 
 	 public static void configureLargePartitionPermits(Options options) {
 	        Apex.LARGE_PARTITION_PERMIT_COUNT = options.largePartitionPermits > 0
