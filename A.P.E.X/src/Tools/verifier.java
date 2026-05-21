@@ -3,6 +3,9 @@ package Tools;
 import java.lang.foreign.MemorySegment;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 
 import generator.DataGenerator;
 import generator.DataMode;
@@ -37,150 +40,190 @@ public class verifier {
             return;
         }
 
-        long prev = data.get(Apex.LONG, 0);
+        // Global reduction accumulators
+        AtomicLong globalXorV = new AtomicLong(0L);
+        AtomicLong globalSumV = new AtomicLong(0L);
+        AtomicLong globalHashV = new AtomicLong(0L);
+        AtomicLong globalHashKV = new AtomicLong(0L);
+        AtomicLong globalFailFlags = new AtomicLong(0L);
+        
+        AtomicLong globalMinKey = new AtomicLong(Long.MAX_VALUE);
+        AtomicLong globalMaxKey = new AtomicLong(Long.MIN_VALUE);
 
-        // --- 🚀 8-Way Split Execution Registers to Completely Saturate Hardware Pipelines ---
-        long xor0 = 0L, xor1 = 0L, xor2 = 0L, xor3 = 0L, xor4 = 0L, xor5 = 0L, xor6 = 0L, xor7 = 0L;
-        long sum0 = 0L, sum1 = 0L, sum2 = 0L, sum3 = 0L, sum4 = 0L, sum5 = 0L, sum6 = 0L, sum7 = 0L;
-        long hV0  = 0L, hV1  = 0L, hV2  = 0L, hV3  = 0L, hV4  = 0L, hV5  = 0L, hV6  = 0L, hV7  = 0L;
-        long hKV0 = 0L, hKV1 = 0L, hKV2 = 0L, hKV3 = 0L, hKV4 = 0L, hKV5 = 0L, hKV6 = 0L, hKV7 = 0L;
+        int tasks = Apex.THREADS;
+        long chunk = n / tasks;
+        ArrayList<Future<?>> futures = new ArrayList<>(tasks);
 
-        long min0 = Long.MAX_VALUE, min1 = Long.MAX_VALUE, min2 = Long.MAX_VALUE, min3 = Long.MAX_VALUE;
-        long min4 = Long.MAX_VALUE, min5 = Long.MAX_VALUE, min6 = Long.MAX_VALUE, min7 = Long.MAX_VALUE;
-        long max0 = Long.MIN_VALUE, max1 = Long.MIN_VALUE, max2 = Long.MIN_VALUE, max3 = Long.MIN_VALUE;
-        long max4 = Long.MIN_VALUE, max5 = Long.MIN_VALUE, max6 = Long.MIN_VALUE, max7 = Long.MIN_VALUE;
+        // --- 🚀 Launching Parallel Thread-Local Verification Map Slices ---
+        for (int t = 0; t < tasks; t++) {
+            final int tid = t;
+            futures.add(Apex.POOL.submit(() -> {
+                long startRecord = tid * chunk;
+                long endRecord = (tid == tasks - 1) ? n : startRecord + chunk;
 
-        long failFlags = 0L;
+                if (startRecord >= endRecord) return;
 
-        // 8 records * 16 bytes per record = 128 bytes total loop stride footprint
-        long strideBytes = 8L * Apex.RECORD_BYTES;
-        long endBytes = n << 4;
-        long unrolledEnd = endBytes - strideBytes;
+                // Local independent tracking registers to eliminate inter-core thread contention
+                long localXor0 = 0L, localXor1 = 0L, localXor2 = 0L, localXor3 = 0L;
+                long localSum0 = 0L, localSum1 = 0L, localSum2 = 0L, localSum3 = 0L;
+                long localHv0  = 0L, localHv1  = 0L, localHv2  = 0L, localHv3  = 0L;
+                long localHkv0 = 0L, localHkv1 = 0L, localHkv2 = 0L, localHkv3 = 0L;
 
-        long p = 0L;
+                long localMin = Long.MAX_VALUE;
+                long localMax = Long.MIN_VALUE;
+                long localFailFlags = 0L;
 
-        // --- 🚀 8-Way Unrolled Memory Stride Core Loop ---
-        while (p <= unrolledEnd) {
-            long p0 = p;
-            long p1 = p0 + 16;
-            long p2 = p1 + 16;
-            long p3 = p2 + 16;
-            long p4 = p3 + 16;
-            long p5 = p4 + 16;
-            long p6 = p5 + 16;
-            long p7 = p6 + 16;
+                long baseBytes = startRecord << 4;
+                long endBytes = endRecord << 4;
+                
+                // 4 records * 16 bytes per record = 64 bytes (1 perfect hardware cache line footprint)
+                long strideBytes = 4L * Apex.RECORD_BYTES;
+                long unrolledEnd = endBytes - strideBytes;
 
-            long k0 = data.get(Apex.LONG, p0);      long v0 = data.get(Apex.LONG, p0 + 8);
-            long k1 = data.get(Apex.LONG, p1);      long v1 = data.get(Apex.LONG, p1 + 8);
-            long k2 = data.get(Apex.LONG, p2);      long v2 = data.get(Apex.LONG, p2 + 8);
-            long k3 = data.get(Apex.LONG, p3);      long v3 = data.get(Apex.LONG, p3 + 8);
-            long k4 = data.get(Apex.LONG, p4);      long v4 = data.get(Apex.LONG, p4 + 8);
-            long k5 = data.get(Apex.LONG, p5);      long v5 = data.get(Apex.LONG, p5 + 8);
-            long k6 = data.get(Apex.LONG, p6);      long v6 = data.get(Apex.LONG, p6 + 8);
-            long k7 = data.get(Apex.LONG, p7);      long v7 = data.get(Apex.LONG, p7 + 8);
+                long p = baseBytes;
+                long prev = data.get(Apex.LONG, p);
 
-            // 1. ORDER COMPLETENESS SCANNING
-            int cmp01 = Long.compareUnsigned(k0, k1);
-            int cmp12 = Long.compareUnsigned(k1, k2);
-            int cmp23 = Long.compareUnsigned(k2, k3);
-            int cmp34 = Long.compareUnsigned(k3, k4);
-            int cmp45 = Long.compareUnsigned(k4, k5);
-            int cmp56 = Long.compareUnsigned(k5, k6);
-            int cmp67 = Long.compareUnsigned(k6, k7);
-            if ((p > 0 && Long.compareUnsigned(prev, k0) > 0) || cmp01 > 0 || cmp12 > 0 || cmp23 > 0 || cmp34 > 0 || cmp45 > 0 || cmp56 > 0 || cmp67 > 0) {
-                failFlags |= 1L;
-            }
+                // Prime bounds tracking variables with initial records
+                if (Long.compareUnsigned(prev, localMin) < 0) localMin = prev;
+                if (Long.compareUnsigned(prev, localMax) > 0) localMax = prev;
 
-            // 2. PAIR IDENTITY FUNCTION CHECKS
-            if (k0 != DataGenerator.keyForMode(v0, n, mode) || 
-                k1 != DataGenerator.keyForMode(v1, n, mode) || 
-                k2 != DataGenerator.keyForMode(v2, n, mode) || 
-                k3 != DataGenerator.keyForMode(v3, n, mode) ||
-                k4 != DataGenerator.keyForMode(v4, n, mode) ||
-                k5 != DataGenerator.keyForMode(v5, n, mode) ||
-                k6 != DataGenerator.keyForMode(v6, n, mode) ||
-                k7 != DataGenerator.keyForMode(v7, n, mode)) {
-                failFlags |= 2L;
-            }
+                // Core 4-Way Stride Unrolled Cache Line Read Pipeline
+                while (p <= unrolledEnd) {
+                    long p0 = p;
+                    long p1 = p0 + 16;
+                    long p2 = p1 + 16;
+                    long p3 = p2 + 16;
 
-            // 3. LOGICAL BUFFER VALUES CHANNELS
-            if (v0 < 0 || v0 >= n || v1 < 0 || v1 >= n || v2 < 0 || v2 >= n || v3 < 0 || v3 >= n ||
-                v4 < 0 || v4 >= n || v5 < 0 || v5 >= n || v6 < 0 || v6 >= n || v7 < 0 || v7 >= n) {
-                failFlags |= 4L;
-            }
+                    long k0 = data.get(Apex.LONG, p0);      long v0 = data.get(Apex.LONG, p0 + 8);
+                    long k1 = data.get(Apex.LONG, p1);      long v1 = data.get(Apex.LONG, p1 + 8);
+                    long k2 = data.get(Apex.LONG, p2);      long v2 = data.get(Apex.LONG, p2 + 8);
+                    long k3 = data.get(Apex.LONG, p3);      long v3 = data.get(Apex.LONG, p3 + 8);
 
-            // 4. ACCUMULATE INDEPENDENT PARALLEL SLOTS
-            xor0 ^= v0; sum0 += v0; hV0 ^= mix64(v0); hKV0 ^= mix64(k0 ^ (v0 * 0x9E3779B97F4A7C15L));
-            xor1 ^= v1; sum1 += v1; hV1 ^= mix64(v1); hKV1 ^= mix64(k1 ^ (v1 * 0x9E3779B97F4A7C15L));
-            xor2 ^= v2; sum2 += v2; hV2 ^= mix64(v2); hKV2 ^= mix64(k2 ^ (v2 * 0x9E3779B97F4A7C15L));
-            xor3 ^= v3; sum3 += v3; hV3 ^= mix64(v3); hKV3 ^= mix64(k3 ^ (v3 * 0x9E3779B97F4A7C15L));
-            xor4 ^= v4; sum4 += v4; hV4 ^= mix64(v4); hKV4 ^= mix64(k4 ^ (v4 * 0x9E3779B97F4A7C15L));
-            xor5 ^= v5; sum5 += v5; hV5 ^= mix64(v5); hKV5 ^= mix64(k5 ^ (v5 * 0x9E3779B97F4A7C15L));
-            xor6 ^= v6; sum6 += v6; hV6 ^= mix64(v6); hKV6 ^= mix64(k6 ^ (v6 * 0x9E3779B97F4A7C15L));
-            xor7 ^= v7; sum7 += v7; hV7 ^= mix64(v7); hKV7 ^= mix64(k7 ^ (v7 * 0x9E3779B97F4A7C15L));
+                    // 1. MONOTONIC SEQUENCE VALIDIATION
+                    int cmp01 = Long.compareUnsigned(k0, k1);
+                    int cmp12 = Long.compareUnsigned(k1, k2);
+                    int cmp23 = Long.compareUnsigned(k2, k3);
+                    // Only enforce continuous order scanning across cross-record chunks
+                    if ((p > baseBytes && Long.compareUnsigned(prev, k0) > 0) || cmp01 > 0 || cmp12 > 0 || cmp23 > 0) {
+                        localFailFlags |= 1L;
+                    }
 
-            // 5. PARALLEL MIN-MAX VALUE TRACKING
-            if (Long.compareUnsigned(k0, min0) < 0) min0 = k0;
-            if (Long.compareUnsigned(k1, min1) < 0) min1 = k1;
-            if (Long.compareUnsigned(k2, min2) < 0) min2 = k2;
-            if (Long.compareUnsigned(k3, min3) < 0) min3 = k3;
-            if (Long.compareUnsigned(k4, min4) < 0) min4 = k4;
-            if (Long.compareUnsigned(k5, min5) < 0) min5 = k5;
-            if (Long.compareUnsigned(k6, min6) < 0) min6 = k6;
-            if (Long.compareUnsigned(k7, min7) < 0) min7 = k7;
+                    // 2. FUNCTIONAL INVERSE IDENTITY INTEGRITY VERIFICATION
+                    if (k0 != DataGenerator.keyForMode(v0, n, mode) || 
+                        k1 != DataGenerator.keyForMode(v1, n, mode) || 
+                        k2 != DataGenerator.keyForMode(v2, n, mode) || 
+                        k3 != DataGenerator.keyForMode(v3, n, mode)) {
+                        localFailFlags |= 2L;
+                    }
 
-            if (Long.compareUnsigned(k0, max0) > 0) max0 = k0;
-            if (Long.compareUnsigned(k1, max1) > 0) max1 = k1;
-            if (Long.compareUnsigned(k2, max2) > 0) max2 = k2;
-            if (Long.compareUnsigned(k3, max3) > 0) max3 = k3;
-            if (Long.compareUnsigned(k4, max4) > 0) max4 = k4;
-            if (Long.compareUnsigned(k5, max5) > 0) max5 = k5;
-            if (Long.compareUnsigned(k6, max6) > 0) max6 = k6;
-            if (Long.compareUnsigned(k7, max7) > 0) max7 = k7;
+                    // 3. LOGICAL RECORD MEMORY SPACE CHANNELS
+                    if (v0 < 0 || v0 >= n || v1 < 0 || v1 >= n || v2 < 0 || v2 >= n || v3 < 0 || v3 >= n) {
+                        localFailFlags |= 4L;
+                    }
 
-            prev = k7;
-            p += strideBytes;
+                    // 4. PARALLEL PERMUTATION TRACKS
+                    localXor0 ^= v0; localSum0 += v0; localHv0 ^= mix64(v0); localHkv0 ^= mix64(k0 ^ (v0 * 0x9E3779B97F4A7C15L));
+                    localXor1 ^= v1; localSum1 += v1; localHv1 ^= mix64(v1); localHkv1 ^= mix64(k1 ^ (v1 * 0x9E3779B97F4A7C15L));
+                    localXor2 ^= v2; localSum2 += v2; localHv2 ^= mix64(v2); localHkv2 ^= mix64(k2 ^ (v2 * 0x9E3779B97F4A7C15L));
+                    localXor3 ^= v3; localSum3 += v3; localHv3 ^= mix64(v3); localHkv3 ^= mix64(k3 ^ (v3 * 0x9E3779B97F4A7C15L));
+
+                    // 5. CACHE LOCAL RECONNAISSANCE MIN-MAX SCAN
+                    if (Long.compareUnsigned(k0, localMin) < 0) localMin = k0;
+                    if (Long.compareUnsigned(k1, localMin) < 0) localMin = k1;
+                    if (Long.compareUnsigned(k2, localMin) < 0) localMin = k2;
+                    if (Long.compareUnsigned(k3, localMin) < 0) localMin = k3;
+
+                    if (Long.compareUnsigned(k0, localMax) > 0) localMax = k0;
+                    if (Long.compareUnsigned(k1, localMax) > 0) localMax = k1;
+                    if (Long.compareUnsigned(k2, localMax) > 0) localMax = k2;
+                    if (Long.compareUnsigned(k3, localMax) > 0) localMax = k3;
+
+                    prev = k3;
+                    p += strideBytes;
+                }
+
+                // Handle remaining thread slice tail residues
+                long currentIdx = p >>> 4;
+                for (; currentIdx < endRecord; currentIdx++) {
+                    long currentPos = currentIdx << 4;
+                    long k = data.get(Apex.LONG, currentPos);
+                    long v = data.get(Apex.LONG, currentPos + 8);
+
+                    if (currentIdx > startRecord && Long.compareUnsigned(prev, k) > 0) localFailFlags |= 1L;
+                    if (k != DataGenerator.keyForMode(v, n, mode)) localFailFlags |= 2L;
+                    if (v < 0 || v >= n) localFailFlags |= 4L;
+
+                    localXor0 ^= v;
+                    localSum0 += v;
+                    localHv0  ^= mix64(v);
+                    localHkv0 ^= mix64(k ^ (v * 0x9E3779B97F4A7C15L));
+
+                    if (Long.compareUnsigned(k, localMin) < 0) localMin = k;
+                    if (Long.compareUnsigned(k, localMax) > 0) localMax = k;
+
+                    prev = k;
+                }
+
+                // --- 🛡️ Execute Cross-Core Border Sequence Integrity Lock Scan ---
+                // Ensures terminal elements of thread slices are sorted relative to neighbor beginnings
+                if (endRecord < n) {
+                    long nextK = data.get(Apex.LONG, endRecord << 4);
+                    if (Long.compareUnsigned(prev, nextK) > 0) {
+                        localFailFlags |= 1L;
+                    }
+                }
+
+                // Combine local unrolled registers back into the thread-local instance variables
+                long threadXor = localXor0 ^ localXor1 ^ localXor2 ^ localXor3;
+                long threadSum = localSum0 + localSum1 + localSum2 + localSum3;
+                long threadHv  = localHv0  ^ localHv1  ^ localHv2  ^ localHv3;
+                long threadHkv = localHkv0 ^ localHkv1 ^ localHkv2 ^ localHkv3;
+
+                // --- 📥 Reduce Step: Safely accumulate local statistics into atomic global structures ---
+                globalXorV.accumulateAndGet(threadXor, (a, b) -> a ^ b);
+                globalSumV.addAndGet(threadSum);
+                globalHashV.accumulateAndGet(threadHv, (a, b) -> a ^ b);
+                globalHashKV.accumulateAndGet(threadHkv, (a, b) -> a ^ b);
+                globalFailFlags.accumulateAndGet(localFailFlags, (a, b) -> a | b);
+
+                // Thread-safe min/max reduction checks
+                long currentMin;
+                while (Long.compareUnsigned(localMin, currentMin = globalMinKey.get()) < 0) {
+                    if (globalMinKey.compareAndSet(currentMin, localMin)) break;
+                }
+                long currentMax;
+                while (Long.compareUnsigned(localMax, currentMax = globalMaxKey.get()) > 0) {
+                    if (globalMaxKey.compareAndSet(currentMax, localMax)) break;
+                }
+            }));
         }
 
-        // Aggregate 8 independent lane streams back into global metrics variables
-        long xorV   = xor0 ^ xor1 ^ xor2 ^ xor3 ^ xor4 ^ xor5 ^ xor6 ^ xor7;
-        long sumV   = sum0 + sum1 + sum2 + sum3 + sum4 + sum5 + sum6 + sum7;
-        long hashV  = hV0  ^ hV1  ^ hV2  ^ hV3  ^ hV4  ^ hV5  ^ hV6  ^ hV7;
-        long hashKV = hKV0 ^ hKV1 ^ hKV2 ^ hKV3 ^ hKV4 ^ hKV5 ^ hKV6 ^ hKV7;
-
-        long minKey = Math.min(Math.min(Math.min(min0, min1), Math.min(min2, min3)), Math.min(Math.min(min4, min5), Math.min(min6, min7)));
-        long maxKey = Math.max(Math.max(Math.max(max0, max1), Math.max(max2, max3)), Math.max(Math.max(max4, max5), Math.max(max6, max7)));
-
-        // --- 🛬 Residual Scalar Tail Pass ---
-        long i = p >>> 4;
-        for (; i < n; i++) {
-            long currentPos = i << 4;
-            long k = data.get(Apex.LONG, currentPos);
-            long v = data.get(Apex.LONG, currentPos + 8);
-
-            if (i > 0 && Long.compareUnsigned(prev, k) > 0) failFlags |= 1L;
-            if (k != DataGenerator.keyForMode(v, n, mode)) failFlags |= 2L;
-            if (v < 0 || v >= n) failFlags |= 4L;
-
-            xorV ^= v;
-            sumV += v;
-            hashV ^= mix64(v);
-            hashKV ^= mix64(k ^ (v * 0x9E3779B97F4A7C15L));
-
-            if (Long.compareUnsigned(k, minKey) < 0) minKey = k;
-            if (Long.compareUnsigned(k, maxKey) > 0) maxKey = k;
-
-            prev = k;
+        // Synchronize and wait for all execution tasks to finalize
+        // --- 🛡️ Fix applied: Bypassed external package mapping using native inline synchronization ---
+        for (Future<?> future : futures) {
+            try {
+                future.get(); // Blocks securely until each individual parallel task completes execution
+            } catch (Exception ex) {
+                throw new RuntimeException("Parallel verification task loop execution failed", ex);
+            }
         }
 
-        // --- Check Permutation Targets Checksums ---
+        long xorV = globalXorV.get();
+        long sumV = globalSumV.get();
+        long hashV = globalHashV.get();
+        long hashKV = globalHashKV.get();
+        long failFlags = globalFailFlags.get();
+        long minKey = globalMinKey.get();
+        long maxKey = globalMaxKey.get();
+
+        // --- 📊 EVALUATE REDUCED PERMUTATION TARGETS ---
         long expectedXorV = tools.xorZeroToNMinusOne(n);
         long expectedSumV = tools.triangularZeroToNMinusOne(n);
 
         if (xorV != expectedXorV)  failFlags |= 8L;
         if (sumV != expectedSumV)  failFlags |= 16L;
 
-        // --- Throw Validation Errors If Broken ---
+        // --- FAILURE EXCEPTION ORCHESTRATION ---
         if (failFlags != 0L) {
             StringBuilder sb = new StringBuilder();
             sb.append("VERIFICATION FAILED\n");

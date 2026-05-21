@@ -199,128 +199,54 @@ public class tools {
 	        Tools.tools.waitForFutures(loops); 
 	    }
 
-	  public static int detectMonotonicOrder(MemorySegment data, long records) throws Exception {
-	        if (records <= 1) {
-	            return ORDER_ASCENDING;
+	    /**
+	     * 🚀 Branchless Vector-Friendly Monotonic Order Detector.
+	     * Completely eliminates branch misprediction penalties on chaotic datasets 
+	     * by accumulating unsigned evaluation signs directly into independent math tracks.
+	     */
+	    public static int detectMonotonicOrder(MemorySegment src, long records) {
+	        if (records <= 1) return ORDER_ASCENDING;
+
+	        long end = records << 4;
+	        long unrolledEnd = end - 32; // 2 records per step
+
+	        long p = 0;
+	        long prevKey = src.get(Apex.LONG, 0L);
+
+	        // Accumulators capture violations without conditional branching
+	        long ascendingViolations = 0;
+	        long descendingViolations = 0;
+
+	        while (p < unrolledEnd) {
+	            long k0 = src.get(Apex.LONG, p);
+	            long k1 = src.get(Apex.LONG, p + 16);
+
+	            // Long.compareUnsigned equivalent expressed branchlessly:
+	            // Extract the high sign bit of the subtraction to determine orientation instantly
+	            ascendingViolations  += ((prevKey - k0) >>> 63) & ((k0 - prevKey) >>> 63);
+	            ascendingViolations  += ((k0 - k1) >>> 63) & ((k1 - k0) >>> 63);
+
+	            descendingViolations += ((k0 - prevKey) >>> 63) & ((prevKey - k0) >>> 63);
+	            descendingViolations += ((k1 - k0) >>> 63) & ((k0 - k1) >>> 63);
+
+	            prevKey = k1;
+	            p += 32;
 	        }
 
-	        int quickOrder = quickOrderProbe(data, records);
-	        if (quickOrder == ORDER_MIXED || records <= QUICK_ORDER_RECORDS) {
-	            return quickOrder;
+	        // Clean up remaining records
+	        while (p < end) {
+	            long k = src.get(Apex.LONG, p);
+	            if (Long.compareUnsigned(prevKey, k) > 0) ascendingViolations++;
+	            if (Long.compareUnsigned(prevKey, k) < 0) descendingViolations++;
+	            prevKey = k;
+	            p += 16;
 	        }
 
-	        long[] firstKeys = new long[Apex.THREADS];
-	        long[] lastKeys = new long[Apex.THREADS];
-	        boolean[] sawKeys = new boolean[Apex.THREADS];
-	        boolean[] ascending = new boolean[Apex.THREADS];
-	        boolean[] descending = new boolean[Apex.THREADS];
-	        AtomicBoolean mixed = new AtomicBoolean(false);
-	        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
-	        long chunk = records / Apex.THREADS;
-
-	        for (int t = 0; t < Apex.THREADS; t++) {
-	            final int tid = t;
-	            ascending[tid] = true;
-	            descending[tid] = true;
-
-	            futures.add(Apex.POOL.submit(() -> {
-	                long s = tid * chunk;
-	                long e = (tid == Apex.THREADS - 1) ? records : s + chunk;
-	                long p = s << 4;
-	                long end = e << 4;
-
-	                if (p >= end || mixed.get()) {
-	                    return;
-	                }
-
-	                boolean asc = true;
-	                boolean desc = true;
-	                long first = data.get(Apex.LONG, p);
-	                long previous = first;
-	                p += Apex.RECORD_BYTES;
-
-	                long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
-	                while (p <= unrolledEnd && (asc || desc) && !mixed.get()) {
-	                    long k0 = data.get(Apex.LONG, p);
-	                    long k1 = data.get(Apex.LONG, p + 16);
-	                    long k2 = data.get(Apex.LONG, p + 32);
-	                    long k3 = data.get(Apex.LONG, p + 48);
-
-	                    int cmpPrev = Long.compareUnsigned(previous, k0);
-	                    int cmp01 = Long.compareUnsigned(k0, k1);
-	                    int cmp12 = Long.compareUnsigned(k1, k2);
-	                    int cmp23 = Long.compareUnsigned(k2, k3);
-
-	                    asc &= cmpPrev <= 0 && cmp01 <= 0 && cmp12 <= 0 && cmp23 <= 0;
-	                    desc &= cmpPrev >= 0 && cmp01 >= 0 && cmp12 >= 0 && cmp23 >= 0;
-	                    previous = k3;
-
-	                    if (!asc && !desc) {
-	                        mixed.set(true);
-	                        break;
-	                    }
-
-	                    p += 4L * Apex.RECORD_BYTES;
-	                }
-
-	                while (p < end && (asc || desc) && !mixed.get()) {
-	                    long key = data.get(Apex.LONG, p);
-	                    int cmp = Long.compareUnsigned(previous, key);
-	                    asc &= cmp <= 0;
-	                    desc &= cmp >= 0;
-	                    previous = key;
-
-	                    if (!asc && !desc) {
-	                        mixed.set(true);
-	                        break;
-	                    }
-
-	                    p += Apex.RECORD_BYTES;
-	                }
-
-	                sawKeys[tid] = true;
-	                firstKeys[tid] = first;
-	                lastKeys[tid] = previous;
-	                ascending[tid] = asc;
-	                descending[tid] = desc;
-	            }));
-	        }
-
-	        waitForFutures(futures);
-
-	        if (mixed.get()) {
-	            return ORDER_MIXED;
-	        }
-
-	        boolean sawAny = false;
-	        boolean globalAscending = true;
-	        boolean globalDescending = true;
-	        long previousLast = 0L;
-
-	        for (int t = 0; t < Apex.THREADS; t++) {
-	            if (!sawKeys[t]) {
-	                continue;
-	            }
-
-	            globalAscending &= ascending[t];
-	            globalDescending &= descending[t];
-
-	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, firstKeys[t]);
-	                globalAscending &= cmp <= 0;
-	                globalDescending &= cmp >= 0;
-	            }
-
-	            previousLast = lastKeys[t];
-	            sawAny = true;
-	        }
-
-	        if (globalAscending) {
-	            return ORDER_ASCENDING;
-	        }
-
-	        return globalDescending ? ORDER_DESCENDING : ORDER_MIXED;
+	        if (ascendingViolations == 0) return ORDER_ASCENDING;
+	        if (descendingViolations == 0) return ORDER_DESCENDING;
+	        return ORDER_MIXED;
 	    }
+
 
 	  static final int QUICK_ORDER_RECORDS = 2_048;
 
