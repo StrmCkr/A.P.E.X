@@ -394,6 +394,13 @@ public class tools {
 	        MemorySegment.copy(source, sourceBase + offset, target, targetBase + offset, count * Apex.RECORD_BYTES);
 	    }
 
+	    // Unlocks 512-bit vector hardware registers under JDK 25
+	    private static final jdk.incubator.vector.VectorSpecies<Long> L_SPECIES = jdk.incubator.vector.LongVector.SPECIES_512;
+
+	    /**
+	     * 🚀 Vector-Accelerated Parallel Reverse Copy Router.
+	     * Capitalizes on 512-bit registers to swap and mirror records at memory bus saturation.
+	     */
 	    public static void reverseCopyRecords(
 	            MemorySegment source,
 	            long sourceBase,
@@ -437,52 +444,47 @@ public class tools {
 	                try {
 	                    Tools.tools.waitForFutures(loops);
 	                } catch (Exception ex) {
-	                    throw new RuntimeException("Parallel reverse copy failed", ex);
+	                    throw new RuntimeException("Parallel vector reverse copy failed", ex);
 	                }
 	                return;
 	            }
 	        }
 
+	        // --- ⚡ Fast 4-Record (64-byte) SIMD Vector Pipeline ---
 	        long out = targetBase;
 	        long right = records - 1;
 
 	        while (right >= 3) {
-	            long p0 = sourceBase + (right << 4);
-	            long p1 = p0 - Apex.RECORD_BYTES;
-	            long p2 = p1 - Apex.RECORD_BYTES;
-	            long p3 = p2 - Apex.RECORD_BYTES;
+	            long pStart = sourceBase + ((right - 3) << 4);
 
-	            long k0 = source.get(Apex.LONG, p0);
-	            long v0 = source.get(Apex.LONG, p0 + 8);
-	            long k1 = source.get(Apex.LONG, p1);
-	            long v1 = source.get(Apex.LONG, p1 + 8);
-	            long k2 = source.get(Apex.LONG, p2);
-	            long v2 = source.get(Apex.LONG, p2 + 8);
-	            long k3 = source.get(Apex.LONG, p3);
-	            long v3 = source.get(Apex.LONG, p3 + 8);
+	            // Load 4 contiguous records (8 longs) directly into a 512-bit vector register
+	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
 
-	            target.set(Apex.LONG, out, k0);
-	            target.set(Apex.LONG, out + 8, v0);
-	            target.set(Apex.LONG, out + 16, k1);
-	            target.set(Apex.LONG, out + 24, v1);
-	            target.set(Apex.LONG, out + 32, k2);
-	            target.set(Apex.LONG, out + 40, v2);
-	            target.set(Apex.LONG, out + 48, k3);
-	            target.set(Apex.LONG, out + 56, v3);
+	            // Rearrange the 64-bit lanes inside the register to invert the record positions cleanly in silicon:
+	            // Original:  [K3, V3, K2, V2, K1, V1, K0, V0]
+	            // Target:    [K0, V0, K1, V1, K2, V2, K3, V3]
+	            var reordered = vec.rearrange(jdk.incubator.vector.VectorShuffle.fromValues(L_SPECIES, 6, 7, 4, 5, 2, 3, 0, 1));
 
-	            out += 4L * Apex.RECORD_BYTES;
+	            // Stream the inverted records directly out to the destination target memory segments
+	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
+
+	            out += 64; 
 	            right -= 4;
 	        }
 
+	        // Handle structural residual scalar tails safely
 	        while (right >= 0) {
 	            long p = sourceBase + (right << 4);
-	            target.set(Apex.LONG, out, source.get(Apex.LONG, p));
-	            target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
+	            target.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, out, source.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, p));
+	            target.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, out + 8, source.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, p + 8));
 	            out += Apex.RECORD_BYTES;
 	            right--;
 	        }
 	    }
 
+	    /**
+	     * 🚀 Vector-Accelerated Sub-Slice Parallel Worker.
+	     */
 	    static void reverseCopySlice(
 	            MemorySegment source,
 	            long sourceBase,
@@ -500,115 +502,77 @@ public class tools {
 	        long remaining = count;
 
 	        while (remaining >= 4) {
-	            long p0 = sourceBase + (right << 4);
-	            long p1 = p0 - Apex.RECORD_BYTES;
-	            long p2 = p1 - Apex.RECORD_BYTES;
-	            long p3 = p2 - Apex.RECORD_BYTES;
+	            long pStart = sourceBase + ((right - 3) << 4);
 
-	            long k0 = source.get(Apex.LONG, p0);
-	            long v0 = source.get(Apex.LONG, p0 + 8);
-	            long k1 = source.get(Apex.LONG, p1);
-	            long v1 = source.get(Apex.LONG, p1 + 8);
-	            long k2 = source.get(Apex.LONG, p2);
-	            long v2 = source.get(Apex.LONG, p2 + 8);
-	            long k3 = source.get(Apex.LONG, p3);
-	            long v3 = source.get(Apex.LONG, p3 + 8);
+	            var vec = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, source, pStart, java.nio.ByteOrder.nativeOrder());
+	            var reordered = vec.rearrange(jdk.incubator.vector.VectorShuffle.fromValues(L_SPECIES, 6, 7, 4, 5, 2, 3, 0, 1));
+	            reordered.intoMemorySegment(target, out, java.nio.ByteOrder.nativeOrder());
 
-	            target.set(Apex.LONG, out, k0);
-	            target.set(Apex.LONG, out + 8, v0);
-	            target.set(Apex.LONG, out + 16, k1);
-	            target.set(Apex.LONG, out + 24, v1);
-	            target.set(Apex.LONG, out + 32, k2);
-	            target.set(Apex.LONG, out + 40, v2);
-	            target.set(Apex.LONG, out + 48, k3);
-	            target.set(Apex.LONG, out + 56, v3);
-
-	            out += 4L * Apex.RECORD_BYTES;
+	            out += 64;
 	            right -= 4;
 	            remaining -= 4;
 	        }
 
 	        while (remaining > 0) {
 	            long p = sourceBase + (right << 4);
-	            target.set(Apex.LONG, out, source.get(Apex.LONG, p));
-	            target.set(Apex.LONG, out + 8, source.get(Apex.LONG, p + 8));
+	            target.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, out, source.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, p));
+	            target.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, out + 8, source.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, p + 8));
 	            out += Apex.RECORD_BYTES;
 	            right--;
 	            remaining--;
 	        }
 	    }
 
+	    /**
+	     * 🚀 In-Place Vector-Accelerated Dual-Pointer Mirror Swapper.
+	     */
 	    public static void reverseRecordsInPlace(MemorySegment data, long base, long records) {
 	        long left = 0;
 	        long right = records - 1;
 
+	        // Process whenever we have at least two 4-record blocks (8 total records) left to swap symmetrically
 	        while (left + 3 < right - 3) {
-	            long lp0 = base + (left << 4);
-	            long lp1 = lp0 + Apex.RECORD_BYTES;
-	            long lp2 = lp1 + Apex.RECORD_BYTES;
-	            long lp3 = lp2 + Apex.RECORD_BYTES;
+	            long leftPos = base + (left << 4);
+	            long rightPosStart = base + ((right - 3) << 4);
 
-	            long rp0 = base + (right << 4);
-	            long rp1 = rp0 - Apex.RECORD_BYTES;
-	            long rp2 = rp1 - Apex.RECORD_BYTES;
-	            long rp3 = rp2 - Apex.RECORD_BYTES;
+	            // Load left block and right block into matching hardware vector lanes simultaneously
+	            var vecL = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, leftPos, java.nio.ByteOrder.nativeOrder());
+	            var vecR = jdk.incubator.vector.LongVector.fromMemorySegment(L_SPECIES, data, rightPosStart, java.nio.ByteOrder.nativeOrder());
 
-	            long lk0 = data.get(Apex.LONG, lp0);
-	            long lv0 = data.get(Apex.LONG, lp0 + 8);
-	            long lk1 = data.get(Apex.LONG, lp1);
-	            long lv1 = data.get(Apex.LONG, lp1 + 8);
-	            long lk2 = data.get(Apex.LONG, lp2);
-	            long lv2 = data.get(Apex.LONG, lp2 + 8);
-	            long lk3 = data.get(Apex.LONG, lp3);
-	            long lv3 = data.get(Apex.LONG, lp3 + 8);
+	            // Symmetrically invert the internal records during cross-over registration shuffles
+	            var invertedL = vecR.rearrange(jdk.incubator.vector.VectorShuffle.fromValues(L_SPECIES, 6, 7, 4, 5, 2, 3, 0, 1));
+	            var invertedR = vecL.rearrange(jdk.incubator.vector.VectorShuffle.fromValues(L_SPECIES, 6, 7, 4, 5, 2, 3, 0, 1));
 
-	            long rk0 = data.get(Apex.LONG, rp0);
-	            long rv0 = data.get(Apex.LONG, rp0 + 8);
-	            long rk1 = data.get(Apex.LONG, rp1);
-	            long rv1 = data.get(Apex.LONG, rp1 + 8);
-	            long rk2 = data.get(Apex.LONG, rp2);
-	            long rv2 = data.get(Apex.LONG, rp2 + 8);
-	            long rk3 = data.get(Apex.LONG, rp3);
-	            long rv3 = data.get(Apex.LONG, rp3 + 8);
-
-	            data.set(Apex.LONG, lp0, rk0);
-	            data.set(Apex.LONG, lp0 + 8, rv0);
-	            data.set(Apex.LONG, lp1, rk1);
-	            data.set(Apex.LONG, lp1 + 8, rv1);
-	            data.set(Apex.LONG, lp2, rk2);
-	            data.set(Apex.LONG, lp2 + 8, rv2);
-	            data.set(Apex.LONG, lp3, rk3);
-	            data.set(Apex.LONG, lp3 + 8, rv3);
-
-	            data.set(Apex.LONG, rp0, lk0);
-	            data.set(Apex.LONG, rp0 + 8, lv0);
-	            data.set(Apex.LONG, rp1, lk1);
-	            data.set(Apex.LONG, rp1 + 8, lv1);
-	            data.set(Apex.LONG, rp2, lk2);
-	            data.set(Apex.LONG, rp2 + 8, lv2);
-	            data.set(Apex.LONG, rp3, lk3);
-	            data.set(Apex.LONG, rp3 + 8, lv3);
+	            // Flush register states back directly over old cross-allocated spatial vectors
+	            invertedL.intoMemorySegment(data, leftPos, java.nio.ByteOrder.nativeOrder());
+	            invertedR.intoMemorySegment(data, rightPosStart, java.nio.ByteOrder.nativeOrder());
 
 	            left += 4;
 	            right -= 4;
 	        }
 
+	        // Standard scalar residual fallback cleanup track for the narrow middle window
 	        while (left < right) {
 	            long lp = base + (left << 4);
 	            long rp = base + (right << 4);
 
-	            long lk = data.get(Apex.LONG, lp);
-	            long lv = data.get(Apex.LONG, lp + 8);
+	            long lk = data.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, lp);
+	            long lv = data.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, lp + 8);
 
-	            data.set(Apex.LONG, lp, data.get(Apex.LONG, rp));
-	            data.set(Apex.LONG, lp + 8, data.get(Apex.LONG, rp + 8));
-	            data.set(Apex.LONG, rp, lk);
-	            data.set(Apex.LONG, rp + 8, lv);
+	            data.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, lp, data.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, rp));
+	            data.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, lp + 8, data.get(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, rp + 8));
+	            data.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, rp, lk);
+	            data.set(java.lang.foreign.ValueLayout.JAVA_LONG_UNALIGNED, rp + 8, lv);
 
 	            left++;
 	            right--;
 	        }
 	    }
+
+
+
+
+
 
 	 public static void configureLargePartitionPermits(Options options) {
 	        Apex.LARGE_PARTITION_PERMIT_COUNT = options.largePartitionPermits > 0

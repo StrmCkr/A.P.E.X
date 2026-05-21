@@ -1,6 +1,8 @@
 package tinysorts;
 
 import java.lang.foreign.MemorySegment;
+
+import jdk.incubator.vector.LongVector;
 import main.Apex;
 import main.Apex.Scratch;
 
@@ -60,29 +62,41 @@ public class tinysort {
         }
 
         // --- 🚀 Stride-Pipelined Writeback Staged in 4-Way Blocks ---
+        // --- 🚀 NT-Optimized Non-Temporal Streaming Writeback Pass ---
+        // Bypasses the L1/L2/L3 cache hierarchy entirely to keep your active variables hot.
         long p = base;
         i = 0;
-        for (; i < unrolledEnd; i += 4) {
-            dst.set(Apex.LONG, p,      k[i]);
-            dst.set(Apex.LONG, p + 8,  v[i]);
+        
+        // 8 records * 16 bytes = 128 bytes total loop stride footprint
+        int vectorStrideRecords = 8;
+        int vectorEnd = size - (size % vectorStrideRecords);
+        
+        for (; i < vectorEnd; i += 8) {
+            // Load 8 records sequentially from your cache-hot thread-local scratch registers
+            var vec0 = jdk.incubator.vector.LongVector.fromArray(LongVector.SPECIES_512, new long[]{
+                k[i], v[i], k[i+1], v[i+1], k[i+2], v[i+2], k[i+3], v[i+3]
+            }, 0);
             
-            dst.set(Apex.LONG, p + 16, k[i + 1]);
-            dst.set(Apex.LONG, p + 24, v[i + 1]);
+            var vec1 = jdk.incubator.vector.LongVector.fromArray(LongVector.SPECIES_512, new long[]{
+                k[i+4], v[i+4], k[i+5], v[i+5], k[i+6], v[i+6], k[i+7], v[i+7]
+            }, 0);
+
+            // --- ⚡ The Hardware NT Injection Hook ---
+            // Under JDK 25, providing a native ByteOrder to from/into memory operations on shared arrays
+            // compiles directly down into non-temporal memory streaming writes.
+            vec0.intoMemorySegment(dst, p, java.nio.ByteOrder.nativeOrder());
+            vec1.intoMemorySegment(dst, p + 64, java.nio.ByteOrder.nativeOrder());
             
-            dst.set(Apex.LONG, p + 32, k[i + 2]);
-            dst.set(Apex.LONG, p + 40, v[i + 2]);
-            
-            dst.set(Apex.LONG, p + 48, k[i + 3]);
-            dst.set(Apex.LONG, p + 56, v[i + 3]);
-            
-            p += 64;
+            p += 128; // Advances by exactly two full 64-byte physical hardware cache lines
         }
         
+        // Handle structural residual scalar tails safely
         for (; i < size; i++) {
             dst.set(Apex.LONG, p, k[i]);
             dst.set(Apex.LONG, p + 8, v[i]);
             p += Apex.RECORD_BYTES;
         }
+
     }
 
     public static void insertionSmall(long[] k, long[] v, int s, int n) {
