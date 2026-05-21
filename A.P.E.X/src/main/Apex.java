@@ -160,13 +160,16 @@ import scatter.scattered;
 
 
  
- 
- /* Runtime notes:
- *   --enable-native-access=ALL-UNNAMED
- *   --enable-preview
- *   -XX:MaxDirectMemorySize=80g
- *   -Xmx16G
- *   
+ /*
+--enable-native-access=ALL-UNNAMED
+--enable-preview
+ -XX:MaxDirectMemorySize=22g
+ -Xmx8G
+--add-modules jdk.incubator.vector
+-XX:UseAVX=2 | 3 
+-XX:+UseLargePages
+-XX:LargePageSizeInBytes=2m 
+
  *   visualizer: https://strmckr.github.io/A.P.E.X/
  *   github: https://github.com/StrmCkr/A.P.E.X/
  *
@@ -203,7 +206,7 @@ public class Apex {
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;
-   public static final long DEFAULT_RECORDS = 100_000_000L;
+   public static final long DEFAULT_RECORDS = 500_000_000L;
    public static final long TUNE_RECORDS = 10_000_000L;
    public static final long WARMUP_RECORDS = 100_000_000L;
    public static int MAX_HEAP_SCRATCH_RECORDS = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
