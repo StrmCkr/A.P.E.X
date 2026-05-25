@@ -27,22 +27,21 @@ import scatter.scattered;
 
 
 /*
- * A.P.E.X : Adaptive Parallel Exact-Variability Dispatch
+ * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
  *
- * High-performance bit-consensus adaptive radix sorting for large-scale
- * 64-bit key/value datasets on modern multi-core processors.
+ * High-performance entropy-adaptive radix sorting for large-scale 64-bit
+ * key/value datasets on modern multi-core processors.
  *
  * Core idea:
- *   A.P.E.X dynamically shapes radix partition topology using deterministic
- *   per-bucket bit-consistency analysis derived from bitwise AND/OR/XOR
- *   reductions over key sets. This enables elimination of refinement work
- *   on invariant bit positions, improving locality, balancing parallel work
- *   distribution, and reducing unnecessary memory movement and radix passes.
+ *   Apex dynamically shapes radix partition topology around observed entropy,
+ *   selecting optimal MSD bit windows to maximize partition quality,
+ *   improve locality, balance parallel work distribution,
+ *   and minimize unnecessary memory movement and radix passes.
  *
  * Architectural model:
- *   - Bit-consistency–adaptive MSD partition planning
- *   - Parallel radix histogram, scatter, and partition execution
- *   - Hybrid MSD–LSD radix pipeline
+ *   - Entropy-adaptive MSD partition planning
+ *   - Parallel radix scatter and partition execution
+ *   - Hybrid MSD-LSD radix pipeline
  *   - Locality-aware memory dispatch and execution routing
  *   - Adaptive in-place and off-heap processing strategies
  *
@@ -53,111 +52,85 @@ import scatter.scattered;
  *
  * P : Parallel
  *     - fully parallel histogramming, scatter, partition execution,
- *       and LSD processing across available CPU cores
+ *       and LSD processing across all available CPU cores
  *
- * E : Exact
- *     - computes deterministic per-bucket bit-consistency masks using
- *       AND/OR reduction; identifies invariant and variable bit positions
- *       exactly with no probabilistic or learned model assumptions
+ * E : Entropic
+ *     - analyzes entropy distribution across bit regions to identify
+ *       high-information radix windows while avoiding degenerate
+ *       or low-cardinality partition collapse
  *
  * X : Dispatch
  *     - coordinates adaptive execution paths, partition scheduling,
  *       memory locality, and heap/off-heap execution strategies
  *
- * Bit-consistency analysis engine:
- *   A.P.E.X uses deterministic bitwise reduction to classify per-bit
- *   behavior within radix buckets.
+ * Entropy determination engine:
+ *   Apex uses bitwise statistical analysis to determine effective
+ *   entropy regions and eliminate non-contributing radix windows.
  *
- *   Bitwise consistency operators:
- *     - XOR analysis to detect disagreement across keys
- *     - AND reduction to identify universally set bits
- *     - OR reduction to identify any-set bits
+ *   Bitwise entropy reduction includes:
+ *     - XOR analysis to detect changing bit regions
+ *     - AND reduction to identify globally shared bit patterns
+ *     - OR reduction to identify globally active bit regions
+ *     - Constant-prefix elimination
+ *     - Sparse-entropy detection
+ *     - Delayed-entropy recognition
+ *     - Duplicate-density detection
  *
- *   From these, a per-bucket variability mask is computed:
- *     - invariant bit positions: OR == AND
- *     - variable bit positions: OR != AND
- *
- *   This enables:
- *     - skipping refinement on invariant radix dimensions
- *     - reducing unnecessary LSD passes
- *     - suppressing degenerate partition amplification
- *     - improving cache locality and workload balance
- *     - dynamically adjusting MSD extraction windows
+ *   These analyses allow Apex to:
+ *     - skip entropy-free radix passes
+ *     - avoid pathological partition fanout
+ *     - reduce tiny partition explosion
+ *     - improve cache locality and partition balance
+ *     - dynamically relocate MSD extraction windows
  *
  * Hybrid radix pipeline:
- *   - MSD radix scatter for global partitioning
- *   - LSD radix refinement for intra-bucket ordering
- *   - deterministic tuple-cycle optimization for low-dimensional domains
- *   - fallback execution paths for skewed or adversarial distributions
+ *   - MSD radix scatter for global entropy-guided partitioning
+ *   - LSD radix refinement for efficient in-partition ordering
+ *   - Adaptive tuple-cycle optimization for compact entropy domains
+ *   - Dynamic fallback paths for pathological distributions
  *
  * Features:
- *   - Bit-consistency–driven MSD window planning
+ *   - Entropy-aware MSD window planning
  *   - Adaptive radix-width selection
  *   - Runtime auto-tuning of radix geometry and thresholds
  *   - Packed tuple-cycle execution
  *   - Locality-aware partition scheduling
  *   - Hybrid heap and off-heap execution
  *   - Parallel histogram, scatter, and partition processing
- *   - Adaptive small-bucket handling
+ *   - Adaptive tiny-partition handling
  *   - Degenerate partition mitigation
  *
- * Tuple projection optimization:
- *   - A.P.E.X may remap sparse bit-variability distributions into compact
- *     tuple domains when doing so reduces refinement cost and improves
- *     locality.
- *
- *   - Tuple execution is enabled only when projected cardinality yields
- *     net reduction in radix refinement work.
- *
- * Sparse partition collapse model:
- *   - The system models key distribution across radix dimensions as a
- *     sparse occupancy structure over bit positions.
- *
- *   - Deterministic analysis identifies:
- *       - inactive bit dimensions (no variation)
- *       - correlated bit structures
- *       - degenerate partition splits
- *
- *   - These are used to:
- *       - eliminate invariant radix axes
- *       - compress sparse partitions into dense representations
- *       - reduce histogram and scatter overhead
- *       - suppress unnecessary recursion depth
- *       - improve cache locality and scheduling efficiency
- *
- *   - Collapse decisions are driven by:
- *       - bit occupancy
- *       - duplicate density
- *       - bucket cardinality
- *       - observed variability mask structure
+ *  Sparse entropy tuple projection:
+ *  - Apex can dynamically remap sparse distributed entropy regions
+ *   into compact tuple domains, reducing radix space, histogram size,
+ *   and memory traffic for low-density entropy distributions.  
+ *  - Tuple-cycle execution is adaptively enabled only when projected
+ *   entropy density produces a net locality and radix-efficiency gain.
  *
  * Designed for:
  *   - Large-scale 64-bit sorting workloads
  *   - High-core-count desktop and server processors
  *   - Memory-bandwidth-sensitive workloads
- *   - adversarial and real-world distributions
+ *   - Adversarial and real-world data distributions
  *
  * Robustness:
  *   Maintains stable behavior across:
- *     - duplicate-heavy datasets
- *     - low-cardinality distributions
- *     - sparse and delayed variability
+ *     - duplicates and low-cardinality datasets
+ *     - sparse and delayed entropy
  *     - clustered and skewed partitions
- *     - nearly sorted and partially ordered runs
+ *     - sorted and partially sorted runs
  *     - pathological radix distributions
  *     - highly imbalanced partition topologies
  *
  * Philosophy:
- *   A.P.E.X prioritizes adaptive partition quality, deterministic bit-level
- *   structure analysis, locality, and scalability over fixed radix geometry
- *   or probabilistic modeling.
+ *   Apex prioritizes adaptive partition quality, locality,
+ *   scalability, and memory efficiency over fixed radix geometry
+ *   or microbenchmark specialization.
  *
- *   The architecture is designed for experimentation, extensibility,
- *   and runtime adaptability within a deterministic execution model.
+ *   The architecture is designed for experimentation,
+ *   extensibility, and deep runtime adaptability rather than
+ *   static one-size-fits-all radix behavior.
  */
-
-
- 
  /*
 --enable-native-access=ALL-UNNAMED
 --enable-preview
