@@ -16,6 +16,11 @@ public class histogram {
 		public  final boolean[] sawKeys;
 		public  final boolean[] ascending;
 		public  final boolean[] descending;
+		public  final long[][] bucketFirstKeys;
+		public  final long[][] bucketLastKeys;
+		public  final boolean[][] bucketSawKeys;
+		public  final boolean[][] bucketAscending;
+		public  final boolean[][] bucketDescending;
 
         HistogramResult(Config cfg) {
             histograms = new int[Apex.THREADS][cfg.msdBucketCount];
@@ -26,11 +31,18 @@ public class histogram {
             sawKeys = new boolean[Apex.THREADS];
             ascending = new boolean[Apex.THREADS];
             descending = new boolean[Apex.THREADS];
+            bucketFirstKeys = new long[Apex.THREADS][cfg.msdBucketCount];
+            bucketLastKeys = new long[Apex.THREADS][cfg.msdBucketCount];
+            bucketSawKeys = new boolean[Apex.THREADS][cfg.msdBucketCount];
+            bucketAscending = new boolean[Apex.THREADS][cfg.msdBucketCount];
+            bucketDescending = new boolean[Apex.THREADS][cfg.msdBucketCount];
 
             for (int t = 0; t < Apex.THREADS; t++) {
                 Arrays.fill(andMasks[t], ~0L);
                 ascending[t] = true;
                 descending[t] = true;
+                Arrays.fill(bucketAscending[t], true);
+                Arrays.fill(bucketDescending[t], true);
             }
         }
     }

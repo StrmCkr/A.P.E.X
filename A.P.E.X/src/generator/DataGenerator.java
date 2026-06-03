@@ -1,8 +1,9 @@
 package generator;
 
+import Tools.tools;
+
 public final class DataGenerator {
 
-    static final long SEED = 0x9E3779B97F4A7C15L;
    public static long keyForMode(long i, long n, DataMode mode) {
             switch (mode) {
                 case RANDOM:
@@ -322,17 +323,10 @@ public final class DataGenerator {
     }
 
     static long scaleOrderedKey(long r, long n) {
-        if (n <= 1) return 0;
-        int bits = 64 - Long.numberOfLeadingZeros(n - 1);
-        return r << (64 - bits);
+        return tools.scaleOrderedKey(r, n);
     }
 
     static long mix64(long x) {
-        x += SEED;
-        x ^= x >>> 30;
-        x *= 0xBF58476D1CE4E5B9L;
-        x ^= x >>> 27;
-        x *= 0x94D049BB133111EBL;
-        return x ^ (x >>> 31);
+        return tools.mix64(x);
     }
 }

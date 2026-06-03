@@ -4,9 +4,6 @@ import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.Future;
-import jdk.incubator.vector.LongVector;
-import jdk.incubator.vector.VectorSpecies;
-
 import Tools.tools;
 import config.configurations.Config;
 import histogram.histogram.HistogramResult;
@@ -39,6 +36,11 @@ public class buildhistogram {
                 int[] hist = result.histograms[tid];
                 long[] orMasks = result.orMasks[tid];
                 long[] andMasks = result.andMasks[tid];
+                long[] bucketFirstKeys = result.bucketFirstKeys[tid];
+                long[] bucketLastKeys = result.bucketLastKeys[tid];
+                boolean[] bucketSawKeys = result.bucketSawKeys[tid];
+                boolean[] bucketAscending = result.bucketAscending[tid];
+                boolean[] bucketDescending = result.bucketDescending[tid];
                 Arrays.fill(andMasks, ~0L);
 
                 long s = tid * chunk;
@@ -46,6 +48,7 @@ public class buildhistogram {
 
                 long p = s << 4;
                 long end = e << 4;
+                long threadStart = p;
 
                 // Establish dynamic vector stride bounds based on active hardware width
                 int stepRecords = main.Apex.RECORDS_PER_REG;
@@ -59,38 +62,38 @@ public class buildhistogram {
                 boolean descending = true;
                 long previousKey = 0L;
 
-                // Prime sequence scanners if data contains records
-                if (s < e) {
+                if (p < end) {
                     firstKey = src.get(Apex.LONG, p);
                     previousKey = firstKey;
                     sawAny = true;
                 }
 
+
                 // --- 🚀 Primary Hardware-Adaptive Vector Loop ---
                 while (p <= unrolledEnd) {
-                    // 1. Load an entire native register's worth of keys directly from the off-heap segment
-                    // On 1800X: Loads 2 records (4 longs / 32 bytes). On 7950X: Loads 4 records (8 longs / 64 bytes).
-                    LongVector vec = LongVector.fromMemorySegment(
-                            main.Apex.L_SPECIES, src, p, java.nio.ByteOrder.nativeOrder()
-                    );
-
-                    // 2. Perform scalar-unrolled sequence tracking across the register's elements
-                    // This extracts elements step by step to build your strict order diagnostics securely
                     for (int i = 0; i < stepRecords; i++) {
                         long recordOffset = p + ((long) i << 4);
                         long k = src.get(Apex.LONG, recordOffset);
 
-                        // Track global order diagnostics safely
-                        if (recordOffset > (s << 4)) {
+                        if (recordOffset > threadStart) {
                             int cmp = Long.compareUnsigned(previousKey, k);
-                            ascending  &= (cmp <= 0);
-                            descending &= (cmp >= 0);
+                            ascending &= cmp <= 0;
+                            descending &= cmp >= 0;
                         }
                         previousKey = k;
                         lastKey = k;
 
                         // Calculate bucket mappings using your exact bitwise parameters
                         int b = (int) ((k >>> msdShift) & bucketMask);
+                        if (bucketSawKeys[b]) {
+                            int bucketCmp = Long.compareUnsigned(bucketLastKeys[b], k);
+                            bucketAscending[b] &= bucketCmp <= 0;
+                            bucketDescending[b] &= bucketCmp >= 0;
+                        } else {
+                            bucketFirstKeys[b] = k;
+                            bucketSawKeys[b] = true;
+                        }
+                        bucketLastKeys[b] = k;
                         hist[b]++;
                         orMasks[b] |= k;
                         andMasks[b] &= k;
@@ -103,15 +106,24 @@ public class buildhistogram {
                 while (p < end) {
                     long k = src.get(Apex.LONG, p);
 
-                    if (p > (s << 4)) {
+                    if (p > threadStart) {
                         int cmp = Long.compareUnsigned(previousKey, k);
-                        ascending  &= (cmp <= 0);
-                        descending &= (cmp >= 0);
+                        ascending &= cmp <= 0;
+                        descending &= cmp >= 0;
                     }
                     previousKey = k;
                     lastKey = k;
 
                     int b = (int) ((k >>> msdShift) & bucketMask);
+                    if (bucketSawKeys[b]) {
+                        int bucketCmp = Long.compareUnsigned(bucketLastKeys[b], k);
+                        bucketAscending[b] &= bucketCmp <= 0;
+                        bucketDescending[b] &= bucketCmp >= 0;
+                    } else {
+                        bucketFirstKeys[b] = k;
+                        bucketSawKeys[b] = true;
+                    }
+                    bucketLastKeys[b] = k;
                     hist[b]++;
                     orMasks[b] |= k;
                     andMasks[b] &= k;
@@ -119,7 +131,6 @@ public class buildhistogram {
                     p += Apex.RECORD_BYTES;
                 }
 
-                // Register thread-local state flags back into the global result schema
                 result.sawKeys[tid] = sawAny;
                 result.firstKeys[tid] = firstKey;
                 result.lastKeys[tid] = lastKey;

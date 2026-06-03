@@ -8,25 +8,23 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Semaphore;
 
-import LSD.lsdbucketplan;
-import MSD.msdbucketplan;
-import MSD.msdbucketplan.MsdBucketPlan;
+
 import Tools.tools;
 import Tools.verifier;
 import config.configurations;
 import config.configurations.Config;
+import config.runoptions;
 import generator.DataGenerator;
 import generator.DataMode;
+import generator.dataparser;
 import generator.initiatedata;
 import main.Apex;
-import scatter.scattered;
+
 
 public final class SortComparison {
-    static final long DEFAULT_RECORDS = 10_000_000L;
-    static final int DEFAULT_RUNS = 3;
-    static final int DEFAULT_WARMUPS = 1;
+    static final int DEFAULT_RUNS = 21;
+    static final int DEFAULT_WARMUPS = 3;
     static final long UNLIMITED = Long.MAX_VALUE;
     static final int INSERTION_THRESHOLD = 64;
 
@@ -43,22 +41,72 @@ public final class SortComparison {
         long maxRecords();
         void sort(long[] records, int n);
     }
+    
+    static final DataMode[] MODES_TO_RUN = {
+    	    DataMode.RANDOM,   
+    	    DataMode.LOW_BITS_ONLY,
+    	    DataMode.HIGH_BITS_ONLY,
+    	    DataMode.DUPLICATES,
+    	    DataMode.ZIPFIANISH,    	      	   
+    	    DataMode.SPARSE_ENTROPY_EXPLOSION
+    	};
+    
+    static final long[] SIZES_TO_RUN = { 	
+    	    		
+    	    1_000_000L,
+    	    10_000_000L,
+    	    100_000_000L,
+    	    500_000_000L
+    	};
 
-    record Result(String name, String kind, long records, double best, double median, String note) {
-    }
+    static ArrayList<Benchmark> selectedBenchmarksCurated() {
+        Map<String, Benchmark> available = new HashMap<>();
+
+        // === APEX ===
+        add(available, new ApexBenchmark());
+        add(available, new ApexKeyBenchmark());
+
+        // === JDK BASELINES ===       
+        add(available, new KeyBenchmark(new JdkSortUnsigned()));
+        add(available, new KeyBenchmark(new JdkParallelSortUnsigned()));      
+
+        // === MODERN HIGH-PERFORMANCE ===
+        add(available, new KeyBenchmark(new FastutilParallelRadixUnsigned()));        
+      
+
+        return new ArrayList<>(available.values());
+    }    
+    
+
+    record Result(
+    	    String name,
+    	    String kind,
+    	    long records,
+    	    double min,
+    	    double median,
+    	    double mean,
+    	    double stddev,
+    	    double max,
+    	    double CV,
+    	    double p95,
+    	    double p99
+    	  
+    	) {}
 
     static final class Args {
-        DataMode mode = DataMode.RANDOM;
-        long records = DEFAULT_RECORDS;
+        DataMode[] modes = MODES_TO_RUN;
+        long[] recordsList = SIZES_TO_RUN;
         int runs = DEFAULT_RUNS;
         int warmups = DEFAULT_WARMUPS;
         int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
+        int workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, threads / 2));
         int tupleBits = Integer.getInteger("apex.tupleBits", 9);
         int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
+        int localMsdBits = Integer.getInteger("apex.localMsdBits", 0);
         int largePermits = 0;
-        boolean inPlace = Boolean.parseBoolean(System.getProperty("apex.inPlaceMsd", "false"));
         boolean lsdWorkStealing = true;
         boolean tuplePacking = Boolean.getBoolean("apex.tuplePacking");
+        boolean curated = true;
         Config config = configurations.defaultConfig();
         String algos = "records";
     }
@@ -68,77 +116,128 @@ public final class SortComparison {
         configureApex(args);
 
         try {
-            int n = checkedArrayLength(args.records);
-            long alignment = alignment();
-            long[] source = generateKeys(n, args.mode, args.records);
-            long expectedSum = sum(source);
-            long expectedXor = xor(source);
-            ArrayList<Benchmark> benchmarks = selectedBenchmarks(args.algos);
-            ArrayList<Result> results = new ArrayList<>();
+            for (DataMode mode : args.modes) {
+                for (long size : args.recordsList) {
 
-            System.out.println("=== APEX SORT COMPARISON ===");
-            System.out.println("Mode: " + args.mode);
-            System.out.println("Records: " + args.records);
-            System.out.println("Runs: " + args.runs + " warmups=" + args.warmups);
-            System.out.println("Threads: " + Apex.THREADS);
-            System.out.println("Apex config: " + args.config);
-            System.out.println("Default lane: key/value records sorted by unsigned key");
-            System.out.println("Optional key-only lane: primitive long[] keys sorted by unsigned key");
-            System.out.println();
+                    int n = checkedArrayLength(size);
+                    long alignment = alignment();
 
-            for (Benchmark benchmark : benchmarks) {
-                if (args.records > benchmark.maxRecords()) {
-                    results.add(new Result(
-                            benchmark.name(),
-                            benchmark.kind(),
-                            args.records,
-                            Double.NaN,
-                            Double.NaN,
-                            "skipped over " + benchmark.maxRecords() + " records"
-                    ));
-                    continue;
-                }
+                    long[] source = generateKeys(n, mode, size);
+                    long expectedSum = sum(source);
+                    long expectedXor = xor(source);
+                                       
 
-                try {
-                    for (int i = 0; i < args.warmups; i++) {
-                        benchmark.run(source, expectedSum, expectedXor, args.mode, args.records, args.config, alignment);
+                    ArrayList<Benchmark> benchmarks =
+                    	    args.curated ? selectedBenchmarksCurated()
+                    	                 : selectedBenchmarks(args.algos);
+
+                    //ArrayList<Benchmark> benchmarks = selectedBenchmarks(args.algos);
+                    ArrayList<Result> results = new ArrayList<>();
+
+                    System.out.println("=== APEX SORT COMPARISON ===");
+                    System.out.println("Mode: " + mode);
+                    System.out.println("Records: " + size);
+                    System.out.println("Runs: " + args.runs + " warmups=" + args.warmups);
+                    System.out.println("Threads: " + Apex.THREADS);
+                    System.out.println("Apex config: " + args.config);
+                    System.out.println();
+
+                    for (Benchmark benchmark : benchmarks) {
+                        if (size > benchmark.maxRecords()) {
+                        	results.add(new Result(
+                        	        benchmark.name(),
+                        	        benchmark.kind(),
+                        	        size,                        	        
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN
+                        	       
+                        	));
+                            continue;
+                        }
+
+                        try {
+                            for (int i = 0; i < args.warmups; i++) {
+                                benchmark.run(source, expectedSum, expectedXor, mode, size, args.config, alignment);
+                            }
+
+                            double[] measured = new double[args.runs];
+                            for (int i = 0; i < args.runs; i++) {
+                                measured[i] = benchmark.run(
+                                        source,
+                                        expectedSum,
+                                        expectedXor,
+                                        mode,
+                                        size,
+                                        args.config,
+                                        alignment
+                                );
+                            }
+
+                            Arrays.sort(measured);
+
+                           
+                            double min = measured[0];
+                            double max = measured[measured.length - 1];
+                            
+                            double median;
+
+                            if ((measured.length & 1) == 0) {
+                                int m = measured.length >>> 1;
+                                median = (measured[m - 1] + measured[m]) * 0.5;
+                            } else {
+                                median = measured[measured.length >>> 1];
+                            }
+                           
+                            double mean = mean(measured);
+                            double stddev = stddev(measured, mean);
+                            double cv = (stddev / mean) * 100.0;
+                            
+                            double p95 = measured[(int) Math.floor(0.95 * (measured.length - 1))];
+                            double p99 = measured[(int) Math.floor(0.99 * (measured.length - 1))];
+
+                            results.add(new Result(
+                                    benchmark.name(),
+                                    benchmark.kind(),
+                                    size,
+                                   min,
+                                    median,
+                                    mean,
+                                    stddev,
+                                   max,
+                                    cv,
+                                    p95,
+                                    p99
+                                    
+                            ));
+                        } catch (Throwable ex) {
+                        	results.add(new Result(
+                        	        benchmark.name(),
+                        	        benchmark.kind(),
+                        	        size,                        	        
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN,
+                        	        Double.NaN
+                        	        
+                        	));
+                        }
                     }
 
-                    double[] measured = new double[args.runs];
-                    for (int i = 0; i < args.runs; i++) {
-                        measured[i] = benchmark.run(
-                                source,
-                                expectedSum,
-                                expectedXor,
-                                args.mode,
-                                args.records,
-                                args.config,
-                                alignment
-                        );
-                    }
-
-                    Arrays.sort(measured);
-                    results.add(new Result(
-                            benchmark.name(),
-                            benchmark.kind(),
-                            args.records,
-                            measured[0],
-                            measured[measured.length >>> 1],
-                            "ok"
-                    ));
-                } catch (Throwable ex) {
-                    results.add(new Result(
-                            benchmark.name(),
-                            benchmark.kind(),
-                            args.records,
-                            Double.NaN,
-                            Double.NaN,
-                            "failed: " + ex.getClass().getSimpleName()
-                    ));
+                    printResults(results);
+                    System.out.println(); // blank line between mode/size tables
                 }
             }
 
-            printResults(results);
         } finally {
             if (Apex.POOL != null) {
                 Apex.POOL.shutdown();
@@ -162,76 +261,7 @@ public final class SortComparison {
         ) throws Exception;
     }
 
-    static final class ApexBenchmark implements Benchmark {
-        @Override
-        public String name() {
-            return "apex-records";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return UNLIMITED;
-        }
-
-        @Override
-        public double run(
-                long[] source,
-                long expectedSum,
-                long expectedXor,
-                DataMode mode,
-                long records,
-                Config cfg,
-                long alignment
-        ) throws Exception {
-            try (Arena arena = Arena.ofShared()) {
-                long bytes = tools.bytesForRecords(records);
-                MemorySegment src = arena.allocate(bytes, alignment);
-                MemorySegment dst = arena.allocate(bytes, alignment);
-
-                initiatedata.initData(src, records, mode);
-
-                long start = System.nanoTime();
-                MemorySegment sorted = Apex.tryInputOrderFastPath(src, dst, records, false);
-
-                if (sorted == null) {
-                    MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
-
-                    sorted = dst;
-                    if (msdPlan.inputAscending) {
-                        sorted = src;
-                    } else if (msdPlan.inputDescending) {
-                        
-                            tools.reverseCopyRecords(src, 0, dst, 0, records);
-                            sorted = dst;
-                        
-                    } else if (Apex.sourceAlreadyFinal(msdPlan, cfg)) {
-                        sorted = src;
-                    } else {
-                       
-                            scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
-                        
-                    }
-
-                    MemorySegment lsdScratch = src;                    
-
-                    if (!msdPlan.inputAscending && !msdPlan.inputDescending &&
-                            Apex.planNeedsRefinement(msdPlan, cfg)) {
-                        lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
-                    }
-                }
-
-                double seconds = elapsed(start);
-                verifier.verify(sorted, records, mode, false);
-                return seconds;
-            }
-        }
-    }
-
+   
     static final class KeyBenchmark implements Benchmark {
         final Sorter sorter;
 
@@ -314,6 +344,233 @@ public final class SortComparison {
         }
     }
 
+  
+    static final class RecordItem {
+        final long key;
+        final long value;
+
+        RecordItem(long key, long value) {
+            this.key = key;
+            this.value = value;
+        }
+    }
+
+    static ArrayList<Benchmark> selectedBenchmarks(String spec) {
+        Map<String, Benchmark> available = new HashMap<>();
+        add(available, new ApexBenchmark());
+        add(available, new ApexKeyBenchmark());
+        
+        add(available, new JdkObjectRecordBenchmark(false));
+        add(available, new JdkObjectRecordBenchmark(true));
+        add(available, new KeyBenchmark(new JdkSortUnsigned()));
+        add(available, new KeyBenchmark(new JdkParallelSortUnsigned()));
+
+   
+        add(available, new RecordBenchmark(new RecordLsdRadixUnsigned("record-lsd-radix-16", 16)));     
+        add(available, new KeyBenchmark(new LsdRadixUnsigned("lsd-radix-16", 16)));      
+        
+        
+        add(available, new RecordBenchmark(new RecordMsdRadix8Unsigned()));
+        add(available, new KeyBenchmark(new MsdRadix8Unsigned()));
+
+        add(available, new RecordBenchmark(new RecordAmericanFlagUnsigned()));
+        add(available, new KeyBenchmark(new AmericanFlagUnsigned()));  
+        
+        add(available, new KeyBenchmark(new FastutilRadixUnsigned()));
+        add(available, new KeyBenchmark(new FastutilParallelRadixUnsigned()));        
+
+
+        String normalized = spec.trim().toLowerCase(Locale.ROOT);
+        String[] recordNames = new String[] {
+        	    "apex-records",        	   
+        	    "jdk-object-arrays-sort",
+        	    "jdk-object-parallel-sort",        	 
+        	    "record-lsd-radix-16",
+        	    "record-msd-radix-8",
+        	    "record-american-flag",  };
+        String[] keyNames = new String[] {
+        	    "apex-keys",
+        	    "jdk-arrays-sort",
+        	    "jdk-parallel-sort",      	  
+           	    "lsd-radix-16",
+        	    "msd-radix-8",  
+        	    "american-flag",
+        	    "fastutil-radix",
+        	    "fastutil-parallel-radix",        	 
+        	   
+        	};
+        String[] names;
+
+        if (normalized.equals("records") || normalized.equals("record")) {
+            names = recordNames;
+        } else if (normalized.equals("keys") || normalized.equals("keyonly") || normalized.equals("key-only")) {
+            names = keyNames;
+        } else if (normalized.equals("all")) {
+            names = concat(recordNames, keyNames);
+        } else {
+            names = normalized.split(",");
+        }
+
+        ArrayList<Benchmark> out = new ArrayList<>();
+        for (String rawName : names) {
+            String name = rawName.trim();
+            Benchmark benchmark = available.get(name);
+            if (benchmark == null) {
+                throw new IllegalArgumentException("Unknown comparison algo: " + name +
+                        ". Known: " + available.keySet());
+            }
+            out.add(benchmark);
+        }
+        return out;
+    }
+
+    static void add(Map<String, Benchmark> available, Benchmark benchmark) {
+        available.put(benchmark.name(), benchmark);
+    }
+
+    static String[] concat(String[] first, String[] second) {
+        String[] out = Arrays.copyOf(first, first.length + second.length);
+        System.arraycopy(second, 0, out, first.length, second.length);
+        return out;
+    }
+     
+    static final class ApexBenchmark implements Benchmark {
+        @Override
+        public String name() {
+            return "apex-records";
+        }
+
+        @Override
+        public String kind() {
+            return "record-sort";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public double run(
+                long[] source,
+                long expectedSum,
+                long expectedXor,
+                DataMode mode,
+                long records,
+                Config cfg,
+                long alignment
+        ) throws Exception {
+            try (Arena arena = Arena.ofShared()) {
+                long bytes = tools.bytesForRecords(records);
+                MemorySegment src = arena.allocate(bytes, alignment);
+                MemorySegment dst = arena.allocate(bytes, alignment);
+
+                initiatedata.initData(src, records, mode);
+
+                long start = System.nanoTime();
+                MemorySegment sorted = Apex.sortPipeline(src, dst, records, cfg);
+                double seconds = elapsed(start);
+                verifier.verify(sorted, records, mode, false);
+                return seconds;
+            }
+        }
+    }
+
+    static final class ApexKeyBenchmark implements Benchmark {
+        @Override
+        public String name() {
+            return "apex-keys";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public double run(
+                long[] source,
+                long expectedSum,
+                long expectedXor,
+                DataMode mode,
+                long records,
+                Config cfg,
+                long alignment
+        ) throws Exception {
+            try (Arena arena = Arena.ofShared()) {
+                long bytes = tools.bytesForRecords(records);
+                MemorySegment src = arena.allocate(bytes, alignment);
+                MemorySegment dst = arena.allocate(bytes, alignment);
+
+                for (int i = 0; i < source.length; i++) {
+                    long p = (long) i << 4;
+                    src.set(Apex.LONG, p, source[i]);
+                    src.set(Apex.LONG, p + 8, i);
+                }
+
+                long start = System.nanoTime();
+                MemorySegment sorted = Apex.sortPipeline(src, dst, records, cfg);
+                double seconds = elapsed(start);
+                verifySegmentKeySort(sorted, records, expectedSum, expectedXor);
+                return seconds;
+            }
+        }
+    }      
+              
+   
+    static final class JdkSortUnsigned implements Sorter {
+        @Override
+        public String name() {
+            return "jdk-arrays-sort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            flipSignBit(data);
+            Arrays.sort(data);
+            flipSignBit(data);
+        }
+    }
+
+    static final class JdkParallelSortUnsigned implements Sorter {
+        @Override
+        public String name() {
+            return "jdk-parallel-sort";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            flipSignBit(data);
+            Arrays.parallelSort(data);
+            flipSignBit(data);
+        }
+    }
+    
     static final class JdkObjectRecordBenchmark implements Benchmark {
         final boolean parallel;
 
@@ -362,134 +619,17 @@ public final class SortComparison {
             return seconds;
         }
     }
-
-    static final class RecordItem {
-        final long key;
-        final long value;
-
-        RecordItem(long key, long value) {
-            this.key = key;
-            this.value = value;
-        }
-    }
-
-    static ArrayList<Benchmark> selectedBenchmarks(String spec) {
-        Map<String, Benchmark> available = new HashMap<>();
-        add(available, new ApexBenchmark());
-        add(available, new JdkObjectRecordBenchmark(false));
-        add(available, new JdkObjectRecordBenchmark(true));
-        add(available, new RecordBenchmark(new RecordLsdRadixUnsigned("record-lsd-radix-8", 8)));
-        add(available, new RecordBenchmark(new RecordLsdRadixUnsigned("record-lsd-radix-11", 11)));
-        add(available, new RecordBenchmark(new RecordLsdRadixUnsigned("record-lsd-radix-16", 16)));
-        add(available, new RecordBenchmark(new RecordMsdRadix8Unsigned()));
-        add(available, new RecordBenchmark(new RecordQuickUnsigned()));
-        add(available, new RecordBenchmark(new RecordDualPivotQuickUnsigned()));
-        add(available, new RecordBenchmark(new RecordHeapUnsigned()));
-        add(available, new RecordBenchmark(new RecordInsertionUnsigned()));
-        add(available, new RecordBenchmark(new RecordBubbleUnsigned()));
-        add(available, new KeyBenchmark(new JdkSortUnsigned()));
-        add(available, new KeyBenchmark(new JdkParallelSortUnsigned()));
-        add(available, new KeyBenchmark(new LsdRadixUnsigned("lsd-radix-8", 8)));
-        add(available, new KeyBenchmark(new LsdRadixUnsigned("lsd-radix-11", 11)));
-        add(available, new KeyBenchmark(new LsdRadixUnsigned("lsd-radix-16", 16)));
-        add(available, new KeyBenchmark(new MsdRadix8Unsigned()));
-        add(available, new KeyBenchmark(new QuickUnsigned()));
-        add(available, new KeyBenchmark(new DualPivotQuickUnsigned()));
-        add(available, new KeyBenchmark(new HeapUnsigned()));
-        add(available, new KeyBenchmark(new InsertionUnsigned()));
-        add(available, new KeyBenchmark(new BubbleUnsigned()));
-        add(available, new KeyBenchmark(new BucketUnsigned()));
-        add(available, new KeyBenchmark(new IntroSortUnsigned()));
-        add(available, new KeyBenchmark(new PdqSortUnsigned()));
-        add(available, new KeyBenchmark(new TimSortUnsigned()));
-        add(available, new KeyBenchmark(new AmericanFlagUnsigned()));
-        add(available, new KeyBenchmark(new SampleSortUnsigned()));
-        add(available, new KeyBenchmark(new BitonicUnsigned()));
-      
-
-        String normalized = spec.trim().toLowerCase(Locale.ROOT);
-        String[] recordNames = new String[] {
-                        "apex-records",
-                        "jdk-object-arrays-sort",
-                        "jdk-object-parallel-sort",
-                        "record-lsd-radix-8",
-                        "record-lsd-radix-11",
-                        "record-lsd-radix-16",
-                        "record-msd-radix-8",
-                        "record-quick-hoare",
-                        "record-dual-pivot-quick",
-                        "record-heap-sort",
-                        "record-insertion",
-                        "record-bubble",
-                        "introsort",
-                        "pdqsort",
-                        "timsort",
-                        "american-flag",
-                        "samplesort",
-                        "bitonic"
-                      
-                };
-        String[] keyNames = new String[] {
-                        "jdk-arrays-sort",
-                        "jdk-parallel-sort",
-                        "lsd-radix-8",
-                        "lsd-radix-11",
-                        "lsd-radix-16",
-                        "msd-radix-8",
-                        "quick-hoare",
-                        "dual-pivot-quick",
-                        "heap-sort",
-                        "bucket-demo",
-                        "insertion",
-                        "bubble"
-                };
-        String[] names;
-
-        if (normalized.equals("records") || normalized.equals("record")) {
-            names = recordNames;
-        } else if (normalized.equals("keys") || normalized.equals("keyonly") || normalized.equals("key-only")) {
-            names = keyNames;
-        } else if (normalized.equals("all")) {
-            names = concat(recordNames, keyNames);
-        } else {
-            names = normalized.split(",");
-        }
-
-        ArrayList<Benchmark> out = new ArrayList<>();
-        for (String rawName : names) {
-            String name = rawName.trim();
-            Benchmark benchmark = available.get(name);
-            if (benchmark == null) {
-                throw new IllegalArgumentException("Unknown comparison algo: " + name +
-                        ". Known: " + available.keySet());
-            }
-            out.add(benchmark);
-        }
-        return out;
-    }
-
-    static void add(Map<String, Benchmark> available, Benchmark benchmark) {
-        available.put(benchmark.name(), benchmark);
-    }
-
-    static String[] concat(String[] first, String[] second) {
-        String[] out = Arrays.copyOf(first, first.length + second.length);
-        System.arraycopy(second, 0, out, first.length, second.length);
-        return out;
-    }
-   
     
-    
-    
-    static final class AmericanFlagUnsigned implements Sorter {
+   static final class MsdRadix8Unsigned implements Sorter {
+
         static final int BITS = 8;
         static final int RADIX = 1 << BITS;
         static final int MASK = RADIX - 1;
-        static final int INSERTION_THRESHOLD = 64;
+        static final int INSERTION_THRESHOLD = 48;
 
         @Override
         public String name() {
-            return "american-flag";
+            return "msd-radix-8";
         }
 
         @Override
@@ -499,394 +639,158 @@ public final class SortComparison {
 
         @Override
         public long maxRecords() {
-            return 250_000_000L;
+            return UNLIMITED;
         }
 
         @Override
         public void sort(long[] data) {
-            sort(data, 0, data.length, 56);
+            int n = data.length;
+            if (n <= 1) {
+                return;
+            }
+
+            long[] aux = new long[n];
+            // no unsigned transform here
+            sort(data, aux, 0, n, 56);
         }
 
-        static void sort(long[] data, int start, int end, int shift) {
-            int size = end - start;
+        static void sort(long[] a, long[] aux, int lo, int hi, int shift) {
 
+            int size = hi - lo;
             if (size <= 1 || shift < 0) {
                 return;
             }
 
             if (size <= INSERTION_THRESHOLD) {
-                insertion(data, start, end);
+                // your insertion: uses Long.compareUnsigned
+                insertion(a, lo, hi);
                 return;
             }
 
+            // counting
             int[] count = new int[RADIX];
-
-            for (int i = start; i < end; i++) {
-                int digit = (int)((data[i] >>> shift) & MASK);
-                count[digit]++;
+            for (int i = lo; i < hi; i++) {
+                int d = (int) ((a[i] >>> shift) & MASK);
+                count[d]++;
             }
 
-            int[] begin = new int[RADIX];
-            int[] next = new int[RADIX];
-
-            begin[0] = start;
-
-            for (int i = 1; i < RADIX; i++) {
-                begin[i] = begin[i - 1] + count[i - 1];
+            // prefix sums (absolute starts)
+            int[] start = new int[RADIX];
+            start[0] = lo;
+            for (int r = 1; r < RADIX; r++) {
+                start[r] = start[r - 1] + count[r - 1];
             }
 
-            System.arraycopy(begin, 0, next, 0, RADIX);
+            // working cursors
+            int[] next = Arrays.copyOf(start, RADIX);
 
-            for (int b = 0; b < RADIX; b++) {
-                int limit = begin[b] + count[b];
-
-                while (next[b] < limit) {
-                    long value = data[next[b]];
-                    int digit = (int)((value >>> shift) & MASK);
-
-                    if (digit == b) {
-                        next[b]++;
-                        continue;
-                    }
-
-                    int target = next[digit]++;
-
-                    long tmp = data[target];
-                    data[target] = value;
-                    data[next[b]] = tmp;
-                }
+            // distribute (absolute indices)
+            for (int i = lo; i < hi; i++) {
+                int d = (int) ((a[i] >>> shift) & MASK);
+                aux[next[d]++] = a[i];
             }
 
-            if (shift == 0) {
-                return;
-            }
+            // copy back
+            System.arraycopy(aux, lo, a, lo, size);
 
-            for (int b = 0; b < RADIX; b++) {
-                int lo = begin[b];
-                int hi = lo + count[b];
-
-                if (hi - lo > 1) {
-                    sort(data, lo, hi, shift - BITS);
-                }
-            }
-        }
-    } 
-    
-    
-    static final class BitonicUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "bitonic";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 4_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            int n = Integer.highestOneBit(data.length);
-
-            for (int k = 2; k <= n; k <<= 1) {
-                for (int j = k >>> 1; j > 0; j >>>= 1) {
-                    for (int i = 0; i < n; i++) {
-                        int ixj = i ^ j;
-
-                        if (ixj > i) {
-                            boolean asc = (i & k) == 0;
-
-                            if ((asc && Long.compareUnsigned(data[i], data[ixj]) > 0) ||
-                                (!asc && Long.compareUnsigned(data[i], data[ixj]) < 0)) {
-                                swap(data, i, ixj);
-                            }
-                        }
-                    }
+            // recurse
+            for (int r = 0; r < RADIX; r++) {
+                int l = start[r];
+                int h = (r == RADIX - 1) ? hi : start[r + 1];
+                if (h - l > 1) {
+                    sort(a, aux, l, h, shift - BITS);
                 }
             }
         }
     }
-    
-    
-    
-    static final class TimSortUnsigned implements Sorter {
+
+    static final class RecordMsdRadix8Unsigned implements RecordSorter {
+
+        static final int BITS = 8;
+        static final int RADIX = 1 << BITS;
+        static final int MASK = RADIX - 1;
+        static final int INSERTION_THRESHOLD = 48;
+
         @Override
         public String name() {
-            return "timsort";
+            return "record-msd-radix-8";
         }
 
         @Override
         public String kind() {
-            return "key-only";
+            return "record-sort";
         }
 
         @Override
         public long maxRecords() {
-            return 25_000_000L;
+            return UNLIMITED;
         }
 
         @Override
-        public void sort(long[] data) {
-            Long[] boxed = new Long[data.length];
-
-            for (int i = 0; i < data.length; i++) {
-                boxed[i] = data[i];
-            }
-
-            Arrays.sort(boxed, Long::compareUnsigned);
-
-            for (int i = 0; i < data.length; i++) {
-                data[i] = boxed[i];
-            }
-        }
-    }
-    
-    static final class SampleSortUnsigned implements Sorter {
-        public String name() {
-            return "samplesort";
+        public void sort(long[] records, int n) {
+            long[] aux = new long[n << 1];
+            sort(records, aux, 0, n, 56);
         }
 
-        @Override
-        public String kind() {
-            return "key-only";
-        }
+        static void sort(long[] r, long[] aux, int lo, int hi, int shift) {
 
-        @Override
-        public long maxRecords() {
-            return 100_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            sampleSort(data, 0, data.length);
-        }
-
-        static void sampleSort(long[] data, int lo, int hi) {
             int size = hi - lo;
-
-            if (size <=INSERTION_THRESHOLD) {
-                insertion(data, lo, hi);
+            if (size <= 1 || shift < 0) {
                 return;
             }
 
-            long pivot1 = data[lo + (size >>> 2)];
-            long pivot2 = data[lo + (size >>> 1)];
-            long pivot3 = data[lo + ((size * 3) >>> 2)];
+            if (size <= INSERTION_THRESHOLD) {
+                recordInsertion(r, lo, hi);   // already unsigned‑correct
+                return;
+            }
 
-            long[] pivots = { pivot1, pivot2, pivot3 };
-            Arrays.sort(pivots);
-
-            long p1 = pivots[0];
-            long p2 = pivots[1];
-            long p3 = pivots[2];
-
-            long[] tmp = new long[size];
-            int[] bucket = new int[4];
-
+            // ---- Counting ----
+            int[] count = new int[RADIX];
             for (int i = lo; i < hi; i++) {
-                long v = data[i];
-
-                if (Long.compareUnsigned(v, p1) < 0) bucket[0]++;
-                else if (Long.compareUnsigned(v, p2) < 0) bucket[1]++;
-                else if (Long.compareUnsigned(v, p3) < 0) bucket[2]++;
-                else bucket[3]++;
+                long key = recordKey(r, i);
+                int d = (int) ((key >>> shift) & MASK);
+                count[d]++;
             }
 
-            int[] pos = new int[4];
-            pos[0] = 0;
-            pos[1] = bucket[0];
-            pos[2] = pos[1] + bucket[1];
-            pos[3] = pos[2] + bucket[2];
+            // ---- Prefix sums (absolute positions) ----
+            int[] start = new int[RADIX];
+            start[0] = lo;
+            for (int i = 1; i < RADIX; i++) {
+                start[i] = start[i - 1] + count[i - 1];
+            }
 
+            // ---- Next write positions ----
+            int[] next = Arrays.copyOf(start, RADIX);
+
+            // ---- Scatter into aux (0‑based window) ----
             for (int i = lo; i < hi; i++) {
-                long v = data[i];
+                long key = recordKey(r, i);
+                int d = (int) ((key >>> shift) & MASK);
 
-                if (Long.compareUnsigned(v, p1) < 0) tmp[pos[0]++] = v;
-                else if (Long.compareUnsigned(v, p2) < 0) tmp[pos[1]++] = v;
-                else if (Long.compareUnsigned(v, p3) < 0) tmp[pos[2]++] = v;
-                else tmp[pos[3]++] = v;
+                int pos = next[d]++ - lo;   // convert absolute → window index
+
+                int src = i << 1;
+                int dst = pos << 1;
+
+                aux[dst]     = r[src];
+                aux[dst + 1] = r[src + 1];
             }
 
-            System.arraycopy(tmp, 0, data, lo, size);
+            // ---- Copy back into r ----
+            System.arraycopy(aux, 0, r, lo << 1, size << 1);
 
-            int a = lo + bucket[0];
-            int b = a + bucket[1];
-            int c = b + bucket[2];
+            // ---- Recurse into buckets ----
+            for (int d = 0; d < RADIX; d++) {
+                int l = start[d];
+                int h = (d == RADIX - 1) ? hi : start[d + 1];
 
-            sampleSort(data, lo, a);
-            sampleSort(data, a, b);
-            sampleSort(data, b, c);
-            sampleSort(data, c, hi);
-        }
-    }
-  
-    
-    
-    static final class PdqSortUnsigned implements Sorter {
-        static final int INSERTION_THRESHOLD = 24;
-
-        @Override
-        public String name() {
-            return "pdqsort";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 100_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            pdq(data, 0, data.length - 1, false);
-        }
-
-        static void pdq(long[] data, int lo, int hi, boolean badPartition) {
-            while (hi - lo > INSERTION_THRESHOLD) {
-                int mid = (lo + hi) >>> 1;
-                long pivot = medianOfThree(data[lo], data[mid], data[hi]);
-
-                int i = lo;
-                int j = hi;
-
-                while (i <= j) {
-                    while (Long.compareUnsigned(data[i], pivot) < 0) i++;
-                    while (Long.compareUnsigned(data[j], pivot) > 0) j--;
-
-                    if (i <= j) {
-                        swap(data, i++, j--);
-                    }
-                }
-
-                boolean highlyUnbalanced =
-                        (j - lo) < ((hi - lo) >>> 4) ||
-                        (hi - i) < ((hi - lo) >>> 4);
-
-                if (highlyUnbalanced && badPartition) {
-                    Arrays.sort(data, lo, hi + 1);
-                    return;
-                }
-
-                if (j - lo < hi - i) {
-                    pdq(data, lo, j, highlyUnbalanced);
-                    lo = i;
-                } else {
-                    pdq(data, i, hi, highlyUnbalanced);
-                    hi = j;
+                if (h - l > 1) {
+                    sort(r, aux, l, h, shift - BITS);
                 }
             }
-
-            insertion(data, lo, hi + 1);
-        }
-    }    
-    
-    
-    static final class IntroSortUnsigned implements Sorter {
-        static final int INSERTION_THRESHOLD = 32;
-
-        @Override
-        public String name() {
-            return "introsort";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 100_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            int depth = 2 * (31 - Integer.numberOfLeadingZeros(data.length));
-            intro(data, 0, data.length - 1, depth);
-        }
-
-        static void intro(long[] data, int lo, int hi, int depth) {
-            while (hi - lo > INSERTION_THRESHOLD) {
-                if (depth == 0) {
-                    HeapUnsigned.siftDown(data, 0, hi + 1);
-                    Arrays.sort(data, lo, hi + 1);
-                    return;
-                }
-
-                depth--;
-                int p = QuickUnsigned.partition(data, lo, hi);
-
-                if (p - lo < hi - p) {
-                    intro(data, lo, p, depth);
-                    lo = p + 1;
-                } else {
-                    intro(data, p + 1, hi, depth);
-                    hi = p;
-                }
-            }
-
-            insertion(data, lo, hi + 1);
-        }
-    }  
-    
-
-    static final class JdkSortUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "jdk-arrays-sort";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return UNLIMITED;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            flipSignBit(data);
-            Arrays.sort(data);
-            flipSignBit(data);
         }
     }
-
-    static final class JdkParallelSortUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "jdk-parallel-sort";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return UNLIMITED;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            flipSignBit(data);
-            Arrays.parallelSort(data);
-            flipSignBit(data);
-        }
-    }
-
+    
     static final class LsdRadixUnsigned implements Sorter {
         final String name;
         final int bits;
@@ -949,385 +853,6 @@ public final class SortComparison {
 
             if (in != data) {
                 System.arraycopy(in, 0, data, 0, data.length);
-            }
-        }
-    }
-
-    static final class MsdRadix8Unsigned implements Sorter {
-        static final int BITS = 8;
-        static final int RADIX = 1 << BITS;
-        static final int MASK = RADIX - 1;
-        static final int INSERTION_THRESHOLD = 48;
-
-        @Override
-        public String name() {
-            return "msd-radix-8";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return UNLIMITED;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            long[] aux = new long[data.length];
-            sort(data, aux, 0, data.length, 56);
-        }
-
-        static void sort(long[] data, long[] aux, int lo, int hi, int shift) {
-            int size = hi - lo;
-            if (size <= 1 || shift < 0) {
-                return;
-            }
-
-            if (size <= INSERTION_THRESHOLD) {
-                insertion(data, lo, hi);
-                return;
-            }
-
-            int[] count = new int[RADIX + 1];
-            for (int i = lo; i < hi; i++) {
-                int digit = (int) ((data[i] >>> shift) & MASK);
-                count[digit + 1]++;
-            }
-
-            for (int r = 0; r < RADIX; r++) {
-                count[r + 1] += count[r];
-            }
-
-            int[] starts = Arrays.copyOf(count, count.length);
-            for (int i = lo; i < hi; i++) {
-                int digit = (int) ((data[i] >>> shift) & MASK);
-                aux[count[digit]++] = data[i];
-            }
-
-            System.arraycopy(aux, 0, data, lo, size);
-
-            for (int r = 0; r < RADIX; r++) {
-                int childLo = lo + starts[r];
-                int childHi = lo + starts[r + 1];
-                if (childHi - childLo > 1) {
-                    sort(data, aux, childLo, childHi, shift - BITS);
-                }
-            }
-        }
-    }
-
-    static final class QuickUnsigned implements Sorter {
-        static final int INSERTION_THRESHOLD = 32;
-
-        @Override
-        public String name() {
-            return "quick-hoare";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            quick(data, 0, data.length - 1);
-        }
-
-        static void quick(long[] data, int lo, int hi) {
-            while (lo < hi) {
-                if (hi - lo <= INSERTION_THRESHOLD) {
-                    insertion(data, lo, hi + 1);
-                    return;
-                }
-
-                int p = partition(data, lo, hi);
-                if (p - lo < hi - p) {
-                    quick(data, lo, p);
-                    lo = p + 1;
-                } else {
-                    quick(data, p + 1, hi);
-                    hi = p;
-                }
-            }
-        }
-
-        static int partition(long[] data, int lo, int hi) {
-            long pivot = medianOfThree(data[lo], data[(lo + hi) >>> 1], data[hi]);
-            int i = lo - 1;
-            int j = hi + 1;
-
-            for (;;) {
-                do {
-                    i++;
-                } while (Long.compareUnsigned(data[i], pivot) < 0);
-
-                do {
-                    j--;
-                } while (Long.compareUnsigned(data[j], pivot) > 0);
-
-                if (i >= j) {
-                    return j;
-                }
-
-                swap(data, i, j);
-            }
-        }
-    }
-
-    static final class DualPivotQuickUnsigned implements Sorter {
-        static final int INSERTION_THRESHOLD = 32;
-
-        @Override
-        public String name() {
-            return "dual-pivot-quick";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            sort(data, 0, data.length - 1);
-        }
-
-        static void sort(long[] data, int lo, int hi) {
-            if (hi - lo <= INSERTION_THRESHOLD) {
-                insertion(data, lo, hi + 1);
-                return;
-            }
-
-            int third = (hi - lo) / 3;
-            int m1 = lo + third;
-            int m2 = hi - third;
-
-            if (Long.compareUnsigned(data[m1], data[m2]) > 0) {
-                swap(data, m1, m2);
-            }
-
-            swap(data, lo, m1);
-            swap(data, hi, m2);
-
-            if (Long.compareUnsigned(data[lo], data[hi]) > 0) {
-                swap(data, lo, hi);
-            }
-
-            long p = data[lo];
-            long q = data[hi];
-            int lt = lo + 1;
-            int gt = hi - 1;
-            int i = lt;
-
-            while (i <= gt) {
-                if (Long.compareUnsigned(data[i], p) < 0) {
-                    swap(data, i++, lt++);
-                } else if (Long.compareUnsigned(data[i], q) > 0) {
-                    swap(data, i, gt--);
-                } else {
-                    i++;
-                }
-            }
-
-            swap(data, lo, --lt);
-            swap(data, hi, ++gt);
-
-            sort(data, lo, lt - 1);
-            if (Long.compareUnsigned(p, q) < 0) {
-                sort(data, lt + 1, gt - 1);
-            }
-            sort(data, gt + 1, hi);
-        }
-    }
-
-    static final class HeapUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "heap-sort";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            int n = data.length;
-            for (int i = (n >>> 1) - 1; i >= 0; i--) {
-                siftDown(data, i, n);
-            }
-
-            for (int end = n - 1; end > 0; end--) {
-                swap(data, 0, end);
-                siftDown(data, 0, end);
-            }
-        }
-
-        static void siftDown(long[] data, int root, int end) {
-            for (;;) {
-                int child = (root << 1) + 1;
-                if (child >= end) {
-                    return;
-                }
-
-                if (child + 1 < end &&
-                        Long.compareUnsigned(data[child], data[child + 1]) < 0) {
-                    child++;
-                }
-
-                if (Long.compareUnsigned(data[root], data[child]) >= 0) {
-                    return;
-                }
-
-                swap(data, root, child);
-                root = child;
-            }
-        }
-    }
-
-    static final class InsertionUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "insertion";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 200_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            insertion(data, 0, data.length);
-        }
-    }
-
-    static final class BubbleUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "bubble";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 20_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            for (int i = 0; i < data.length; i++) {
-                boolean swapped = false;
-                for (int j = 0; j < data.length - i - 1; j++) {
-                    if (Long.compareUnsigned(data[j], data[j + 1]) > 0) {
-                        swap(data, j, j + 1);
-                        swapped = true;
-                    }
-                }
-
-                if (!swapped) {
-                    return;
-                }
-            }
-        }
-    }
-
-    static final class BucketUnsigned implements Sorter {
-        @Override
-        public String name() {
-            return "bucket-demo";
-        }
-
-        @Override
-        public String kind() {
-            return "key-only";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 500_000L;
-        }
-
-        @Override
-        public void sort(long[] data) {
-            if (data.length <= 1) {
-                return;
-            }
-
-            long min = data[0];
-            long max = data[0];
-            for (long value : data) {
-                if (Long.compareUnsigned(value, min) < 0) {
-                    min = value;
-                }
-                if (Long.compareUnsigned(value, max) > 0) {
-                    max = value;
-                }
-            }
-
-            if (min == max) {
-                return;
-            }
-
-            int bucketCount = Math.max(1, (int) Math.sqrt(data.length));
-            @SuppressWarnings("unchecked")
-            ArrayList<Long>[] buckets = new ArrayList[bucketCount];
-            for (int i = 0; i < bucketCount; i++) {
-                buckets[i] = new ArrayList<>();
-            }
-
-            double minDouble = unsignedDouble(min);
-            double range = Math.max(1.0, unsignedDouble(max) - minDouble);
-
-            for (long value : data) {
-                int bucket = (int) (((unsignedDouble(value) - minDouble) / range) * (bucketCount - 1));
-                if (bucket < 0) {
-                    bucket = 0;
-                } else if (bucket >= bucketCount) {
-                    bucket = bucketCount - 1;
-                }
-                buckets[bucket].add(value);
-            }
-
-            int pos = 0;
-            for (ArrayList<Long> bucket : buckets) {
-                long[] tmp = new long[bucket.size()];
-                for (int i = 0; i < tmp.length; i++) {
-                    tmp[i] = bucket.get(i);
-                }
-                insertion(tmp, 0, tmp.length);
-                for (long value : tmp) {
-                    data[pos++] = value;
-                }
             }
         }
     }
@@ -1402,15 +927,15 @@ public final class SortComparison {
         }
     }
 
-    static final class RecordMsdRadix8Unsigned implements RecordSorter {
+    static final class RecordAmericanFlagUnsigned implements RecordSorter {
         static final int BITS = 8;
         static final int RADIX = 1 << BITS;
         static final int MASK = RADIX - 1;
-        static final int INSERTION_THRESHOLD = 48;
+        static final int INSERTION_THRESHOLD = 64;
 
         @Override
         public String name() {
-            return "record-msd-radix-8";
+            return "record-american-flag";
         }
 
         @Override
@@ -1425,310 +950,234 @@ public final class SortComparison {
 
         @Override
         public void sort(long[] records, int n) {
-            long[] aux = new long[records.length];
-            sort(records, aux, 0, n, 56);
+            sort(records, 0, n, 56);
         }
 
-        static void sort(long[] records, long[] aux, int lo, int hi, int shift) {
-            int size = hi - lo;
+        static void sort(long[] records, int start, int end, int shift) {
+            int size = end - start;
             if (size <= 1 || shift < 0) {
                 return;
             }
 
             if (size <= INSERTION_THRESHOLD) {
-                recordInsertion(records, lo, hi);
+                recordInsertion(records, start, end);
                 return;
             }
 
-            int[] count = new int[RADIX + 1];
-            for (int i = lo; i < hi; i++) {
-                int digit = (int) ((recordKey(records, i) >>> shift) & MASK);
-                count[digit + 1]++;
+            int[] count = new int[RADIX];
+            for (int i = start; i < end; i++) {
+                count[(int) ((recordKey(records, i) >>> shift) & MASK)]++;
             }
 
-            for (int r = 0; r < RADIX; r++) {
-                count[r + 1] += count[r];
+            int[] begin = new int[RADIX];
+            int[] next = new int[RADIX];
+            begin[0] = start;
+            for (int i = 1; i < RADIX; i++) {
+                begin[i] = begin[i - 1] + count[i - 1];
             }
+            System.arraycopy(begin, 0, next, 0, RADIX);
 
-            int[] starts = Arrays.copyOf(count, count.length);
-            for (int i = lo; i < hi; i++) {
-                int p = i << 1;
-                int digit = (int) ((records[p] >>> shift) & MASK);
-                int q = count[digit]++ << 1;
-                aux[q] = records[p];
-                aux[q + 1] = records[p + 1];
-            }
+            for (int b = 0; b < RADIX; b++) {
+                int limit = begin[b] + count[b];
+                while (next[b] < limit) {
+                    long key = recordKey(records, next[b]);
+                    int digit = (int) ((key >>> shift) & MASK);
 
-            System.arraycopy(aux, 0, records, lo << 1, size << 1);
-
-            for (int r = 0; r < RADIX; r++) {
-                int childLo = lo + starts[r];
-                int childHi = lo + starts[r + 1];
-                if (childHi - childLo > 1) {
-                    sort(records, aux, childLo, childHi, shift - BITS);
-                }
-            }
-        }
-    }
-
-    static final class RecordQuickUnsigned implements RecordSorter {
-        static final int INSERTION_THRESHOLD = 32;
-
-        @Override
-        public String name() {
-            return "record-quick-hoare";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] records, int n) {
-            quick(records, 0, n - 1);
-        }
-
-        static void quick(long[] records, int lo, int hi) {
-            while (lo < hi) {
-                if (hi - lo <= INSERTION_THRESHOLD) {
-                    recordInsertion(records, lo, hi + 1);
-                    return;
-                }
-
-                int p = partition(records, lo, hi);
-                if (p - lo < hi - p) {
-                    quick(records, lo, p);
-                    lo = p + 1;
-                } else {
-                    quick(records, p + 1, hi);
-                    hi = p;
-                }
-            }
-        }
-
-        static int partition(long[] records, int lo, int hi) {
-            long pivot = medianOfThree(recordKey(records, lo), recordKey(records, (lo + hi) >>> 1), recordKey(records, hi));
-            int i = lo - 1;
-            int j = hi + 1;
-
-            for (;;) {
-                do {
-                    i++;
-                } while (Long.compareUnsigned(recordKey(records, i), pivot) < 0);
-
-                do {
-                    j--;
-                } while (Long.compareUnsigned(recordKey(records, j), pivot) > 0);
-
-                if (i >= j) {
-                    return j;
-                }
-
-                swapRecord(records, i, j);
-            }
-        }
-    }
-
-    static final class RecordDualPivotQuickUnsigned implements RecordSorter {
-        static final int INSERTION_THRESHOLD = 32;
-
-        @Override
-        public String name() {
-            return "record-dual-pivot-quick";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] records, int n) {
-            sort(records, 0, n - 1);
-        }
-
-        static void sort(long[] records, int lo, int hi) {
-            if (hi - lo <= INSERTION_THRESHOLD) {
-                recordInsertion(records, lo, hi + 1);
-                return;
-            }
-
-            int third = (hi - lo) / 3;
-            int m1 = lo + third;
-            int m2 = hi - third;
-
-            if (Long.compareUnsigned(recordKey(records, m1), recordKey(records, m2)) > 0) {
-                swapRecord(records, m1, m2);
-            }
-
-            swapRecord(records, lo, m1);
-            swapRecord(records, hi, m2);
-
-            if (Long.compareUnsigned(recordKey(records, lo), recordKey(records, hi)) > 0) {
-                swapRecord(records, lo, hi);
-            }
-
-            long p = recordKey(records, lo);
-            long q = recordKey(records, hi);
-            int lt = lo + 1;
-            int gt = hi - 1;
-            int i = lt;
-
-            while (i <= gt) {
-                long key = recordKey(records, i);
-                if (Long.compareUnsigned(key, p) < 0) {
-                    swapRecord(records, i++, lt++);
-                } else if (Long.compareUnsigned(key, q) > 0) {
-                    swapRecord(records, i, gt--);
-                } else {
-                    i++;
-                }
-            }
-
-            swapRecord(records, lo, --lt);
-            swapRecord(records, hi, ++gt);
-
-            sort(records, lo, lt - 1);
-            if (Long.compareUnsigned(p, q) < 0) {
-                sort(records, lt + 1, gt - 1);
-            }
-            sort(records, gt + 1, hi);
-        }
-    }
-
-    static final class RecordHeapUnsigned implements RecordSorter {
-        @Override
-        public String name() {
-            return "record-heap-sort";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 50_000_000L;
-        }
-
-        @Override
-        public void sort(long[] records, int n) {
-            for (int i = (n >>> 1) - 1; i >= 0; i--) {
-                siftDown(records, i, n);
-            }
-
-            for (int end = n - 1; end > 0; end--) {
-                swapRecord(records, 0, end);
-                siftDown(records, 0, end);
-            }
-        }
-
-        static void siftDown(long[] records, int root, int end) {
-            for (;;) {
-                int child = (root << 1) + 1;
-                if (child >= end) {
-                    return;
-                }
-
-                if (child + 1 < end &&
-                        Long.compareUnsigned(recordKey(records, child), recordKey(records, child + 1)) < 0) {
-                    child++;
-                }
-
-                if (Long.compareUnsigned(recordKey(records, root), recordKey(records, child)) >= 0) {
-                    return;
-                }
-
-                swapRecord(records, root, child);
-                root = child;
-            }
-        }
-    }
-
-    static final class RecordInsertionUnsigned implements RecordSorter {
-        @Override
-        public String name() {
-            return "record-insertion";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 200_000L;
-        }
-
-        @Override
-        public void sort(long[] records, int n) {
-            recordInsertion(records, 0, n);
-        }
-    }
-
-    static final class RecordBubbleUnsigned implements RecordSorter {
-        @Override
-        public String name() {
-            return "record-bubble";
-        }
-
-        @Override
-        public String kind() {
-            return "record-sort";
-        }
-
-        @Override
-        public long maxRecords() {
-            return 20_000L;
-        }
-
-        @Override
-        public void sort(long[] records, int n) {
-            for (int i = 0; i < n; i++) {
-                boolean swapped = false;
-                for (int j = 0; j < n - i - 1; j++) {
-                    if (Long.compareUnsigned(recordKey(records, j), recordKey(records, j + 1)) > 0) {
-                        swapRecord(records, j, j + 1);
-                        swapped = true;
+                    if (digit == b) {
+                        next[b]++;
+                        continue;
                     }
-                }
 
-                if (!swapped) {
-                    return;
+                    swapRecord(records, next[b], next[digit]++);
+                }
+            }
+
+            if (shift == 0) {
+                return;
+            }
+
+            for (int b = 0; b < RADIX; b++) {
+                int lo = begin[b];
+                int hi = lo + count[b];
+                if (hi - lo > 1) {
+                    sort(records, lo, hi, shift - BITS);
                 }
             }
         }
     }
+    static final class AmericanFlagUnsigned implements Sorter {
+        static final int BITS = 8;
+        static final int RADIX = 1 << BITS;
+        static final int MASK = RADIX - 1;
+        static final int INSERTION_THRESHOLD = 64;
+
+        @Override
+        public String name() {
+            return "american-flag";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public void sort(long[] data) {
+            sort(data, 0, data.length, 56);
+        }
+
+        static void sort(long[] data, int start, int end, int shift) {
+            int size = end - start;
+
+            if (size <= 1 || shift < 0) {
+                return;
+            }
+
+            if (size <= INSERTION_THRESHOLD) {
+                insertion(data, start, end);
+                return;
+            }
+
+            int[] count = new int[RADIX];
+
+            for (int i = start; i < end; i++) {
+                int digit = (int)((data[i] >>> shift) & MASK);
+                count[digit]++;
+            }
+
+            int[] begin = new int[RADIX];
+            int[] next = new int[RADIX];
+
+            begin[0] = start;
+
+            for (int i = 1; i < RADIX; i++) {
+                begin[i] = begin[i - 1] + count[i - 1];
+            }
+
+            System.arraycopy(begin, 0, next, 0, RADIX);
+
+            for (int b = 0; b < RADIX; b++) {
+                int limit = begin[b] + count[b];
+
+                while (next[b] < limit) {
+                    long value = data[next[b]];
+                    int digit = (int)((value >>> shift) & MASK);
+
+                    if (digit == b) {
+                        next[b]++;
+                        continue;
+                    }
+
+                    int target = next[digit]++;
+
+                    long tmp = data[target];
+                    data[target] = value;
+                    data[next[b]] = tmp;
+                }
+            }
+
+            if (shift == 0) {
+                return;
+            }
+
+            for (int b = 0; b < RADIX; b++) {
+                int lo = begin[b];
+                int hi = lo + count[b];
+
+                if (hi - lo > 1) {
+                    sort(data, lo, hi, shift - BITS);
+                }
+            }
+        }
+    }       
+    
+    static final class FastutilRadixUnsigned implements Sorter {
+
+        @Override
+        public String name() {
+            return "fastutil-radix";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public void sort(long[] data) {
+
+            flipSignBit(data);
+            try {
+                Class<?> longArrays = Class.forName("it.unimi.dsi.fastutil.longs.LongArrays");
+                longArrays.getMethod("radixSort", long[].class).invoke(null, (Object) data);
+            } catch (ReflectiveOperationException ex) {
+                throw new IllegalStateException("FastUtil LongArrays.radixSort is not on the classpath", ex);
+            } finally {
+                flipSignBit(data);
+            }
+        }
+    }
+    
+    static final class FastutilParallelRadixUnsigned implements Sorter {
+
+        @Override
+        public String name() {
+            return "fastutil-parallel-radix";
+        }
+
+        @Override
+        public String kind() {
+            return "key-only";
+        }
+
+        @Override
+        public long maxRecords() {
+            return UNLIMITED;
+        }
+
+        @Override
+        public void sort(long[] data) {
+
+            flipSignBit(data);
+            try {
+                Class<?> longArrays = Class.forName("it.unimi.dsi.fastutil.longs.LongArrays");
+                longArrays.getMethod("parallelRadixSort", long[].class).invoke(null, (Object) data);
+            } catch (ReflectiveOperationException ex) {
+                throw new IllegalStateException("FastUtil LongArrays.parallelRadixSort is not on the classpath", ex);
+            } finally {
+                flipSignBit(data);
+            }
+        }
+    }
+
 
     static void configureApex(Args args) {
-        Apex.THREADS = args.threads;
-        Apex.LSD_WORK_STEALING = args.lsdWorkStealing;
-        Apex.WORK_STEAL_BATCH = Integer.getInteger("apex.workBatch", 4);
-        Apex.PACKED_TUPLE_CYCLES = args.tuplePacking;       
-        Apex.DIRECT_TUPLE_BITS = args.tupleBits;
-        Apex.MAX_HEAP_SCRATCH_RECORDS = args.heapScratchRecords;
-
-        int permits = args.largePermits > 0 ? args.largePermits : Math.max(1, args.threads / 8);
-        Apex.LARGE_PARTITION_PERMIT_COUNT = permits;
-        Apex.LARGE_PARTITION_PERMITS = new Semaphore(permits);
-        Apex.POOL = Executors.newFixedThreadPool(args.threads);
+        runoptions.applyApexSettings(
+                args.threads,
+                args.lsdWorkStealing,
+                args.workStealBatch,
+                args.tuplePacking,
+                args.tupleBits,
+                args.heapScratchRecords,
+                args.localMsdBits,
+                args.largePermits
+        );
+        Apex.POOL = Executors.newFixedThreadPool(Apex.THREADS);
     }
 
     static Args parseArgs(String[] rawArgs) {
         Args args = new Args();
+        boolean workStealBatchExplicit = false;
 
         for (String raw : rawArgs) {
             String arg = raw.trim();
@@ -1738,7 +1187,7 @@ public final class SortComparison {
 
             int eq = arg.indexOf('=');
             if (eq < 0) {
-                args.mode = parseMode(arg);
+                args.modes = new DataMode[] { dataparser.parseMode(arg) };
                 continue;
             }
 
@@ -1746,97 +1195,165 @@ public final class SortComparison {
             String value = arg.substring(eq + 1).trim();
 
             switch (key) {
+            case "curated": args.curated = runoptions.parseBoolean(value); break;
                 case "mode":
-                    args.mode = parseMode(value);
+                    args.modes = new DataMode[] { dataparser.parseMode(value) };
+                    break;
+                case "modes":
+                    args.modes = dataparser.parseModes(value).toArray(new DataMode[0]);
                     break;
                 case "records":
                 case "n":
-                    args.records = parseCount(value);
+                    args.recordsList = runoptions.parseLongListOrRange(value);
                     break;
                 case "runs":
-                    args.runs = parsePositiveInt(value);
+                    args.runs = runoptions.parsePositiveInt(value);
                     break;
                 case "warmup":
                 case "warmups":
-                    args.warmups = parseNonNegativeInt(value);
+                    args.warmups = runoptions.parseNonNegativeInt(value);
                     break;
                 case "threads":
-                    args.threads = parsePositiveInt(value);
+                    args.threads = runoptions.parseThreads(value);
                     break;
                 case "config":
-                    args.config = parseConfig(value);
+                    args.config = runoptions.parseConfig(value);
                     break;
                 case "algos":
                 case "algo":
                     args.algos = value;
                     break;
                 case "tuplebits":
-                    args.tupleBits = parseNonNegativeInt(value);
+                    args.tupleBits = runoptions.parseNonNegativeInt(value);
                     break;
                 case "heapscratch":
                 case "heapscratchrecords":
-                    args.heapScratchRecords = parsePositiveInt(value);
+                    args.heapScratchRecords = runoptions.parsePositiveInt(value);
+                    break;
+                case "localmsdbits":
+                case "secondarymsdbits":
+                case "submsdbits":
+                    args.localMsdBits = runoptions.parseNonNegativeInt(value);
                     break;
                 case "largepermits":
                 case "largepartitionpermits":
-                    args.largePermits = parsePositiveInt(value);
-                    break;
-                case "inplace":
-                case "inplacemsd":
-                    args.inPlace = parseBoolean(value);
+                    args.largePermits = runoptions.parsePositiveInt(value);
+                    break;                 
+                case "workbatch":
+                case "stealbatch":
+                case "workstealbatch":
+                    args.workStealBatch = runoptions.parsePositiveInt(value);
+                    workStealBatchExplicit = true;
                     break;
                 case "workstealing":
                 case "lsdworkstealing":
-                    args.lsdWorkStealing = parseBoolean(value);
+                    args.lsdWorkStealing = runoptions.parseBoolean(value);
                     break;
                 case "tuplepacking":
-                    args.tuplePacking = parseBoolean(value);
+                    args.tuplePacking = runoptions.parseBoolean(value);
                     break;
                 default:
                     throw new IllegalArgumentException("Unknown comparison option: " + raw);
             }
         }
 
-        if (args.records < 0) {
-            throw new IllegalArgumentException("records must be non-negative");
+        for (long records : args.recordsList) {
+            if (records < 0) {
+                throw new IllegalArgumentException("records must be non-negative");
+            }
         }
+        if (args.modes.length == 0) {
+            throw new IllegalArgumentException("At least one comparison mode is required");
+        }
+        if (!workStealBatchExplicit) {
+            args.workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, args.threads / 2));
+        }
+        if (args.tupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
+            throw new IllegalArgumentException("tupleBits must be <= " + Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+        if (args.localMsdBits > 0) {
+            runoptions.validateBitRange("Local MSD", args.localMsdBits, args.localMsdBits);
+        }
+        runoptions.validateConfig(args.config);
         return args;
     }
 
-    static void printResults(ArrayList<Result> results) {
-        double apexMedian = Double.NaN;
-        for (Result result : results) {
-            if (result.name.equals("apex-records") && !Double.isNaN(result.median)) {
-                apexMedian = result.median;
-                break;
-            }
-        }
+  static void printResults(ArrayList<Result> results) {
 
-        System.out.printf("%-22s %-12s %12s %12s %12s %10s %s%n",
-                "algorithm", "kind", "best", "median", "M rec/s", "vs apex", "note");
+    double apexMedian = Double.NaN;
 
-        for (Result result : results) {
-            if (Double.isNaN(result.median)) {
-                System.out.printf("%-22s %-12s %12s %12s %12s %10s %s%n",
-                        result.name, result.kind, "-", "-", "-", "-", result.note);
-                continue;
-            }
+    for (Result r : results) {
+        if (r.name.equals("apex-records")
+                && !Double.isNaN(r.median)) {
 
-            double mps = (result.records / result.median) / 1e6;
-            String vsApex = Double.isNaN(apexMedian)
-                    ? "-"
-                    : String.format(Locale.ROOT, "%.2fx", apexMedian / result.median);
-
-            System.out.printf(Locale.ROOT, "%-22s %-12s %11.4fs %11.4fs %11.2f %10s %s%n",
-                    result.name,
-                    result.kind,
-                    result.best,
-                    result.median,
-                    mps,
-                    vsApex,
-                    result.note);
+            apexMedian = r.median;
+            break;
         }
     }
+
+    System.out.printf(
+    		"%-28s %-16s %12s %12s %12s %12s %12s %12s %12s%n",
+        "algorithm",
+        "kind",
+        
+        "median(s)",
+        "mean(s)",
+        "stddev(s)",
+        
+        "CV(%)",         
+        
+        "p95(s)",
+		"p99(s)",
+		
+	    "M rec/s"
+       
+    );
+    System.out.println(
+    	    "-------------------------------------------------------------------------------------------------------------------------------------");
+
+    for (Result r : results) {
+
+        if (Double.isNaN(r.median)) {
+
+            System.out.printf(
+            		"%-28s %-16s %12s %12s  %12s %12s %12s %12s %12s%n",
+                r.name,
+                r.kind,
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",                 
+                "-",
+                "-",
+                "-"
+            );
+
+            continue;
+        }
+
+        double throughput =
+            (r.records / r.median) / 1e6;
+
+
+        System.out.printf(
+            Locale.ROOT,
+            "%-28s %-16s  %12.4f %12.4f %12.4f %12.4f %12.4f %12.2f %12.2f%n",
+            r.name,
+            r.kind,
+           
+            r.median,
+            r.mean,
+            r.stddev,
+            
+            r.CV,
+            
+            r.p95,            
+            r.p99,
+            throughput           
+        );
+    }
+}
 
     static long[] generateKeys(int n, DataMode mode, long records) {
         long[] data = new long[n];
@@ -1868,6 +1385,31 @@ public final class SortComparison {
 
         if (xor != expectedXor) {
             throw new RuntimeException("KEY XOR FAIL");
+        }
+    }
+
+    static void verifySegmentKeySort(MemorySegment data, long records, long expectedSum, long expectedXor) {
+        long sum = 0L;
+        long xor = 0L;
+        long previous = 0L;
+
+        for (long i = 0; i < records; i++) {
+            long key = data.get(Apex.LONG, i << 4);
+            if (i > 0 && Long.compareUnsigned(previous, key) > 0) {
+                throw new RuntimeException("APEX KEY ORDER FAIL at " + i);
+            }
+
+            sum += key;
+            xor ^= key;
+            previous = key;
+        }
+
+        if (sum != expectedSum) {
+            throw new RuntimeException("APEX KEY SUM FAIL");
+        }
+
+        if (xor != expectedXor) {
+            throw new RuntimeException("APEX KEY XOR FAIL");
         }
     }
 
@@ -1914,6 +1456,7 @@ public final class SortComparison {
             throw new RuntimeException("RECORD VALUE CONTENT FAIL");
         }
     }
+    
 
     static void verifyObjectRecordSort(RecordItem[] data, long expectedKeySum, long expectedKeyXor) {
         long keySum = 0L;
@@ -2019,6 +1562,15 @@ public final class SortComparison {
         return b;
     }
 
+    static long ninther(long[] data, int lo, int hi) {
+        int step = Math.max(1, (hi - lo) / 8);
+        long a = medianOfThree(data[lo], data[Math.min(hi, lo + step)], data[Math.min(hi, lo + (step << 1))]);
+        long b = medianOfThree(data[Math.max(lo, ((lo + hi) >>> 1) - step)], data[(lo + hi) >>> 1],
+                data[Math.min(hi, ((lo + hi) >>> 1) + step)]);
+        long c = medianOfThree(data[Math.max(lo, hi - (step << 1))], data[Math.max(lo, hi - step)], data[hi]);
+        return medianOfThree(a, b, c);
+    }
+
     static void flipSignBit(long[] data) {
         for (int i = 0; i < data.length; i++) {
             data[i] ^= Long.MIN_VALUE;
@@ -2072,54 +1624,29 @@ public final class SortComparison {
         return (int) records;
     }
 
-    static DataMode parseMode(String value) {
-        return DataMode.valueOf(value.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
-    }
+    static double mean(double[] values) {
+        double sum = 0.0;
 
-    static Config parseConfig(String value) {
-        String[] parts = value.split(",");
-        if (parts.length != 3) {
-            throw new IllegalArgumentException("config must be msd,lsd,tiny");
-        }
-        return new Config(parsePositiveInt(parts[0]), parsePositiveInt(parts[1]), parsePositiveInt(parts[2]));
-    }
-
-    static boolean parseBoolean(String value) {
-        String v = value.trim().toLowerCase(Locale.ROOT);
-        return v.equals("true") || v.equals("yes") || v.equals("y") || v.equals("1") || v.equals("on");
-    }
-
-    static int parsePositiveInt(String value) {
-        int n = Integer.parseInt(value.trim().replace("_", ""));
-        if (n <= 0) {
-            throw new IllegalArgumentException("Expected positive integer: " + value);
-        }
-        return n;
-    }
-
-    static int parseNonNegativeInt(String value) {
-        int n = Integer.parseInt(value.trim().replace("_", ""));
-        if (n < 0) {
-            throw new IllegalArgumentException("Expected non-negative integer: " + value);
-        }
-        return n;
-    }
-
-    static long parseCount(String value) {
-        String v = value.trim().replace("_", "").toLowerCase(Locale.ROOT);
-        long multiplier = 1L;
-
-        if (v.endsWith("k")) {
-            multiplier = 1_000L;
-            v = v.substring(0, v.length() - 1);
-        } else if (v.endsWith("m")) {
-            multiplier = 1_000_000L;
-            v = v.substring(0, v.length() - 1);
-        } else if (v.endsWith("g")) {
-            multiplier = 1_000_000_000L;
-            v = v.substring(0, v.length() - 1);
+        for (double v : values) {
+            sum += v;
         }
 
-        return Long.parseLong(v) * multiplier;
+        return sum / values.length;
+    }
+
+    static double stddev(double[] values, double mean) {
+
+        if (values.length <= 1) {
+            return 0.0;
+        }
+
+        double sum = 0.0;
+
+        for (double v : values) {
+            double d = v - mean;
+            sum += d * d;
+        }
+
+        return Math.sqrt(sum / (values.length - 1));
     }
 }

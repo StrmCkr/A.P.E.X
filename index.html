@@ -3,74 +3,105 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>APEX by StrmCkr</title>
+  <title>A.P.E.X by StrmCkr</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main class="app">
     <header class="topbar">
       <div>
-        <h1>APEX</h1>
+        <h1>A.P.E.X</h1>
         <p class="credit">by StrmCkr</p>
-        <p>MSD radix bucket scatter followed by LSD passes inside each bucket.</p>
+        <p>Adaptive Parallel Extremal Dispatch</p>
       </div>
-      <div class="controls">
-        <label>
-          Records
-          <input id="recordCount" type="number" min="8" max="100000" step="8" value="96">
-        </label>
-        <label>
-          Mode
-          <select id="dataMode">
-            <option>RANDOM</option>
-            <option>SORTED</option>
-            <option>REVERSE</option>
-            <option>DUPLICATES</option>
-            <option>LOW_BITS_ONLY</option>
-            <option>HIGH_BITS_ONLY</option>
-            <option>DELAYED_ENTROPY</option>
-            <option>SAWTOOTH</option>
-            <option>ALL_EQUAL</option>
-          </select>
-        </label>
-        <label>
-          MSD bits
-          <input id="msdBits" type="number" min="2" max="13" step="1" value="4">
-        </label>
-        <label>
-          LSD bits
-          <input id="lsdBits" type="number" min="2" max="17" step="1" value="3">
-        </label>
-        <label>
-          Threads
-          <select id="workerCount">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="4">4</option>
-            <option value="8">8</option>
-            <option value="16" SELECTED>16</option>
-			<option value="32" >32</option>
-			<option value="64" >64</option>
-			
-          </select>
-        </label>
-        <label class="check-control">
-          Work steal
-          <input id="workStealing" type="checkbox">
-        </label>
-        <label>
-          Speed
-          <input id="speed" type="range" min="1" max="100" value="45">
-        </label>
-        <button id="resetBtn" type="button">Reset</button>
-        <button id="playBtn" type="button">Play</button>
-        <button id="stepBtn" type="button">Step</button>
+      <div class="control-panel">
+        <div class="controls">
+          <label>
+            <span>N</span>
+            <input id="recordCount" type="number" min="0" max="1000000" step="1024" value="2048">
+          </label>
+
+          <label>
+            <span>Data type</span>
+            <select id="dataMode"></select>
+          </label>
+
+          <label>
+            <span>MSD</span>
+            <input id="msdBits" type="number" min="2" max="13" step="1" value="8">
+          </label>
+
+          <label>
+            <span>LSD</span>
+            <input id="lsdBits" type="number" min="2" max="17" step="1" value="8">
+          </label>
+
+          <label>
+            <span>Threads</span>
+            <select id="workerCount">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="4">4</option>
+              <option value="8">8</option>
+              <option value="16" selected>16</option>
+              <option value="32">32</option>
+              <option value="64">64</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Tiny</span>
+            <select id="tinyThreshold">
+              <option value="32">32</option>
+              <option value="64">64</option>
+              <option value="128" selected>128</option>
+              <option value="512">512</option>
+              <option value="1024">1024</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Tuple bits</span>
+            <input id="tupleBits" type="number" min="2" max="16" step="1" value="9">
+          </label>
+
+          <label class="check-control">
+            <span>Tuples</span>
+            <input id="tuplesEnabled" type="checkbox" checked>
+          </label>
+        </div>
+
+        <div class="run-controls" aria-label="Playback controls">
+          <button id="playBtn" type="button">Play</button>
+          <button id="stepBtn" type="button">Step</button>
+          <button id="resetBtn" type="button">Reset</button>
+        </div>
       </div>
     </header>
 
+    <section class="legend-box" aria-label="Sort route color key">
+      <div class="legend-header">
+        <h2>Colour key</h2>
+      </div>
+      <div class="route-key">
+        <span><i class="key-dot key-msd"></i>MSD scatter</span>
+        <span><i class="key-dot key-tiny-insertion"></i>tiny insertion</span>
+        <span><i class="key-dot key-tiny-binary"></i>tiny binary</span>
+        <span><i class="key-dot key-tiny-quick"></i>tiny quick</span>
+        <span><i class="key-dot key-tiny-threeway"></i>tiny 3-way</span>
+        <span><i class="key-dot key-tiny-msd"></i>tiny MSD8</span>
+        <span id="tupleKeyItem"><i class="key-dot key-tuple"></i>Tuples</span>
+        <span><i class="key-dot key-lsd"></i>LSD cycles</span>
+        <span id="tupleTailKeyItem"><i class="key-dot key-lsd-tail"></i>LSD -> tuple tail</span>
+        <span><i class="key-dot key-global-reverse"></i>global reverse</span>
+        <span><i class="key-dot key-bucket-reverse"></i>bucket reverse</span>
+        <span><i class="key-dot key-done"></i>Done</span>
+      </div>
+    </section>
+
     <section class="stage">
       <div class="lane-header">
-        <h2>Phase 0: source array</h2>
+        <h2>Source array</h2>
         <output id="status">Ready</output>
       </div>
       <canvas id="sourceCanvas" class="source-canvas" width="1400" height="180"></canvas>
@@ -78,7 +109,7 @@
 
     <section class="stage">
       <div class="lane-header">
-        <h2>Phase 1: MSD radix bucket scatter</h2>
+        <h2>MSD bucket plan and scatter</h2>
         <span id="msdLabel"></span>
       </div>
       <canvas id="bucketCanvas" class="bucket-canvas" width="1400" height="360"></canvas>
@@ -86,10 +117,34 @@
 
     <section class="stage">
       <div class="lane-header">
-        <h2>Phase 2: LSD radix cycles inside buckets</h2>
+        <h2>Tiny partition lane</h2>
+        <span id="tinyLabel"></span>
+      </div>
+      <canvas id="tinyCanvas" class="tiny-canvas" width="1400" height="360"></canvas>
+    </section>
+
+    <section id="tuplesStage" class="stage">
+      <div class="lane-header">
+        <h2>Tuple direct and tail lane</h2>
+        <span id="tuplesLabel"></span>
+      </div>
+      <canvas id="tuplesCanvas" class="tuples-canvas" width="1400" height="360"></canvas>
+    </section>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>LSD refinement lane</h2>
         <span id="lsdLabel"></span>
       </div>
       <canvas id="lsdCanvas" class="lsd-canvas" width="1400" height="360"></canvas>
+    </section>
+
+    <section class="stage">
+      <div class="lane-header">
+        <h2>Reverse lane</h2>
+        <span id="reverseLabel"></span>
+      </div>
+      <canvas id="reverseCanvas" class="reverse-canvas" width="1400" height="360"></canvas>
     </section>
 
     <section class="stage">

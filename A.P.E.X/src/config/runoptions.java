@@ -2,6 +2,7 @@ package config;
 
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.concurrent.Semaphore;
 
 import config.configurations.Config;
 import generator.DataMode;
@@ -21,18 +22,17 @@ public class runoptions {
         public  int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
         public  int largePartitionPermits = 0;
         public  boolean lsdWorkStealing = true;
-        public  int workStealBatch = Integer.getInteger("apex.workBatch", 4);
+        public  int workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, threads / 2));
         public  boolean packedTupleCycles = Boolean.getBoolean("apex.tuplePacking");
-        public  boolean inPlaceMsdScatter = Boolean.parseBoolean(System.getProperty("apex.inPlaceMsd", "false"));
-        public  int inPlaceTileRecords = Integer.getInteger("apex.inPlaceTileRecords", 64);
         public  int directTupleBits = Integer.getInteger("apex.tupleBits", 9);
-        public  int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
-        public  int minMsdBits = 12;
+        public  int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);       
+        public  int localMsdBits = Integer.getInteger("apex.localMsdBits", 0);
+        public  int minMsdBits = 11;
         public  int maxMsdBits = 13;
         public  int minLsdBits = 12;
-        public   int maxLsdBits = 17;
-        public   int minTiny = 32;
-        public    int maxTiny = 1024;
+        public  int maxLsdBits = 17;
+        public  int minTiny = 32;
+        public  int maxTiny = 1024;
         public Config lockedConfig;
     }
 
@@ -57,12 +57,11 @@ public class runoptions {
             throw new IllegalArgumentException("workBatch must be positive");
         }
 
-        if (options.inPlaceTileRecords <= 0) {
-            throw new IllegalArgumentException("inPlaceTileRecords must be positive");
-        }
-
         validateBitRange("MSD", options.minMsdBits, options.maxMsdBits);
         validateBitRange("LSD", options.minLsdBits, options.maxLsdBits);
+        if (options.localMsdBits > 0) {
+            validateBitRange("Local MSD", options.localMsdBits, options.localMsdBits);
+        }
 
         if (options.minTiny <= 0 || options.maxTiny <= 0) {
             throw new IllegalArgumentException("Tiny range must be positive");
@@ -76,6 +75,47 @@ public class runoptions {
             validateConfig(options.lockedConfig);
         }
     } 
+
+    public static void applyApexSettings(Options options) {
+        applyApexSettings(
+                options.threads,
+                options.lsdWorkStealing,
+                options.workStealBatch,
+                options.packedTupleCycles,
+                options.directTupleBits,
+                options.heapScratchRecords,
+                options.localMsdBits,
+                options.largePartitionPermits
+        );
+    }
+
+    public static void applyApexSettings(
+            int threads,
+            boolean lsdWorkStealing,
+            int workStealBatch,
+            boolean packedTupleCycles,
+            int directTupleBits,
+            int heapScratchRecords,
+            int localMsdBits,
+            int largePartitionPermits
+    ) {
+        Apex.THREADS = threads;
+        Apex.LSD_WORK_STEALING = lsdWorkStealing;
+        Apex.WORK_STEAL_BATCH = workStealBatch;
+        Apex.PACKED_TUPLE_CYCLES = packedTupleCycles;
+        Apex.DIRECT_TUPLE_BITS = directTupleBits;
+        Apex.MAX_HEAP_SCRATCH_RECORDS = heapScratchRecords;
+        Apex.LOCAL_MSD_BITS = localMsdBits;
+        Apex.LOCAL_MSD_MIN_SHARE_DIVISOR = Integer.getInteger(
+                "apex.localMsdMinShareDivisor",
+                Math.max(2, threads / 2)
+        );
+
+        Apex.LARGE_PARTITION_PERMIT_COUNT = largePartitionPermits > 0
+                ? largePartitionPermits
+                : Math.max(1, threads / 8);
+        Apex.LARGE_PARTITION_PERMITS = new Semaphore(Apex.LARGE_PARTITION_PERMIT_COUNT);
+    }
     
     public  static void validateBitRange(String label, int min, int max) {
         if (min <= 0 || max >= 31 || min > max) {
@@ -95,6 +135,7 @@ public class runoptions {
     public static Options parseOptions(String[] args) {
         Options options = new Options();
         ArrayList<String> positional = new ArrayList<>();
+        boolean workStealBatchExplicit = false;
 
         for (String raw : args) {
             String arg = raw.trim();
@@ -155,23 +196,13 @@ public class runoptions {
                 case "stealbatch":
                 case "workstealbatch":
                     options.workStealBatch = parsePositiveInt(value);
+                    workStealBatchExplicit = true;
                     break;
                 case "tuplepacking":
                 case "packedtuples":
                 case "tuplecycles":
                 case "tuples":
                     options.packedTupleCycles = parseBoolean(value);
-                    break;
-                case "inplace":
-                case "inplacemsd":
-                case "inplacescatter":
-                case "inplacemsdscatter":
-                    options.inPlaceMsdScatter = parseBoolean(value);
-                    break;
-                case "inplacetile":
-                case "inplacetiles":
-                case "inplacetilerecords":
-                    options.inPlaceTileRecords = parsePositiveInt(value);
                     break;
                 case "tuplebits":
                 case "tuplecap":
@@ -184,6 +215,12 @@ public class runoptions {
                 case "maxheapscratch":
                     options.heapScratchRecords = parsePositiveInt(value);
                     break;
+                case "localmsdbits":
+                case "secondarymsdbits":
+                case "submsdbits":
+                    options.localMsdBits = parseNonNegativeInt(value);
+                    break;
+               
                 case "msd":
                 case "msdrange": {
                     int[] range = parseIntRange(value);
@@ -238,12 +275,16 @@ public class runoptions {
             options.recordsList = new long[] { recordcountformode.recordCountForMode(options.modes.get(0)) };
         }
 
+        if (!workStealBatchExplicit) {
+            options.workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, options.threads / 2));
+        }
+
         validateOptions(options);
 
         return options;
     }
     
-    static int[] parseIntRange(String value) {
+    public static int[] parseIntRange(String value) {
         String v = value.trim();
         int range = v.indexOf("..");
 
@@ -257,7 +298,7 @@ public class runoptions {
         return new int[] { exact, exact };
     }
 
-    static Config parseConfig(String value) {
+    public static Config parseConfig(String value) {
         String[] parts = value.split(",");
 
         if (parts.length != 3) {
@@ -271,7 +312,7 @@ public class runoptions {
         );
     }
 
-    static int parseThreads(String value) {
+    public static int parseThreads(String value) {
         if (value.equalsIgnoreCase("auto")) {
             return Runtime.getRuntime().availableProcessors();
         }
@@ -279,12 +320,12 @@ public class runoptions {
         return parsePositiveInt(value);
     }
 
-    static boolean parseBoolean(String value) {
+    public static boolean parseBoolean(String value) {
         String v = value.trim().toLowerCase(Locale.ROOT);
         return v.equals("true") || v.equals("yes") || v.equals("y") || v.equals("1") || v.equals("on");
     }
 
-    static int parsePositiveInt(String value) {
+    public static int parsePositiveInt(String value) {
         int n = Integer.parseInt(value.trim().replace("_", ""));
 
         if (n <= 0) {
@@ -294,7 +335,7 @@ public class runoptions {
         return n;
     }
 
-    static int parseNonNegativeInt(String value) {
+    public static int parseNonNegativeInt(String value) {
         int n = Integer.parseInt(value.trim().replace("_", ""));
 
         if (n < 0) {
@@ -304,7 +345,7 @@ public class runoptions {
         return n;
     }
 
-    static long parseCount(String value) {
+    public static long parseCount(String value) {
         String v = value.trim().replace("_", "").toLowerCase(Locale.ROOT);
         long multiplier = 1;
 
@@ -328,7 +369,7 @@ public class runoptions {
         return n;
     }
   
-    static long[] parseLongListOrRange(String value) {
+    public static long[] parseLongListOrRange(String value) {
         String v = value.trim();
         int range = v.indexOf("..");
 

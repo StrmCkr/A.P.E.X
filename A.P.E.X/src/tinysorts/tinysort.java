@@ -2,7 +2,6 @@ package tinysorts;
 
 import java.lang.foreign.MemorySegment;
 
-import jdk.incubator.vector.LongVector;
 import main.Apex;
 import main.Apex.Scratch;
 
@@ -49,17 +48,23 @@ public class tinysort {
 
         // --- 🧠 5-Tier Hierarchical Strategy Router ---
         if (size < 24) {
-            insertionSmall(k, v, 0, size);
+        	 // 🚀 Tier 1 Bridge (1 - 23): Classic Insertion Sort
+              insertionSmall(k, v, 0, size);
         } else if (size < 64) {
-            binaryInsertionSmall(k, v, 0, size);
+          // 🚀 Tier 2 Bridge (24 - 63): Binary Insertion Sort with Exponential Search
+        	binaryInsertionSmall(k, v, 0, size);
         } else if (size < 128) {
+        	// 🚀 Tier 3 Bridge (64 - 127): Classic Quicksort with Median-of-Three Pivot
             quickSort(k, v, 0, size - 1);
-        } else if (size < 256) {
+        } else if (size < 192) {
             // 🚀 Tier 4 Bridge (128 - 255): Bentley-McIlroy 3-Way Duplicate Collapser
             threeWayQuickSort(k, v, 0, size - 1);
-        } else {
-            iterativeMergeSort(k, v, sc.k2, sc.v2, size);
-        }
+            }        
+        else {
+			// 🚀 Tier 5 Bridge (256 - 1_000_000): MSD Radix
+        	MsdRadix8KV.sort(k, v, sc.k2, sc.v2, 0, size, 56);
+		}
+        
 
         // --- 🚀 Stride-Pipelined Writeback Staged in 4-Way Blocks ---
         // --- 🚀 NT-Optimized Non-Temporal Streaming Writeback Pass ---
@@ -72,20 +77,14 @@ public class tinysort {
         int vectorEnd = size - (size % vectorStrideRecords);
         
         for (; i < vectorEnd; i += 8) {
-            // Load 8 records sequentially from your cache-hot thread-local scratch registers
-            var vec0 = jdk.incubator.vector.LongVector.fromArray(LongVector.SPECIES_512, new long[]{
-                k[i], v[i], k[i+1], v[i+1], k[i+2], v[i+2], k[i+3], v[i+3]
-            }, 0);
-            
-            var vec1 = jdk.incubator.vector.LongVector.fromArray(LongVector.SPECIES_512, new long[]{
-                k[i+4], v[i+4], k[i+5], v[i+5], k[i+6], v[i+6], k[i+7], v[i+7]
-            }, 0);
-
-            // --- ⚡ The Hardware NT Injection Hook ---
-            // Under JDK 25, providing a native ByteOrder to from/into memory operations on shared arrays
-            // compiles directly down into non-temporal memory streaming writes.
-            vec0.intoMemorySegment(dst, p, java.nio.ByteOrder.nativeOrder());
-            vec1.intoMemorySegment(dst, p + 64, java.nio.ByteOrder.nativeOrder());
+            dst.set(Apex.LONG, p,       k[i]);     dst.set(Apex.LONG, p + 8,   v[i]);
+            dst.set(Apex.LONG, p + 16,  k[i + 1]); dst.set(Apex.LONG, p + 24,  v[i + 1]);
+            dst.set(Apex.LONG, p + 32,  k[i + 2]); dst.set(Apex.LONG, p + 40,  v[i + 2]);
+            dst.set(Apex.LONG, p + 48,  k[i + 3]); dst.set(Apex.LONG, p + 56,  v[i + 3]);
+            dst.set(Apex.LONG, p + 64,  k[i + 4]); dst.set(Apex.LONG, p + 72,  v[i + 4]);
+            dst.set(Apex.LONG, p + 80,  k[i + 5]); dst.set(Apex.LONG, p + 88,  v[i + 5]);
+            dst.set(Apex.LONG, p + 96,  k[i + 6]); dst.set(Apex.LONG, p + 104, v[i + 6]);
+            dst.set(Apex.LONG, p + 112, k[i + 7]); dst.set(Apex.LONG, p + 120, v[i + 7]);
             
             p += 128; // Advances by exactly two full 64-byte physical hardware cache lines
         }
@@ -226,46 +225,67 @@ public class tinysort {
         threeWayQuickSort(k, v, i, high);
     }
 
-    private static void iterativeMergeSort(long[] srcK, long[] srcV, long[] workK, long[] workV, int n) {
-        long[] currK = srcK; long[] currV = srcV;
-        long[] destK = workK; long[] destV = workV;
+  
+    static final class MsdRadix8KV {
+        static final int BITS  = 8;
+        static final int RADIX = 1 << BITS;   // 256
+        static final int MASK  = RADIX - 1;
+        static final int INSERTION_THRESHOLD = 48;
 
-        for (int i = 0; i < n; i += 16) {
-            insertionSmall(currK, currV, i, Math.min(16, n - i));
-        }
+        static void sort(long[] k, long[] v,
+                         long[] tk, long[] tv,
+                         int lo, int hi, int shift) {
 
-        for (int width = 16; width < n; width <<= 1) {
-            for (int i = 0; i < n; i += (width << 1)) {
-                int left = i;
-                int mid = Math.min(i + width, n);
-                int right = Math.min(i + (width << 1), n);
-
-                int pL = left, pR = mid, out = left;
-
-                while (pL < mid && pR < right) {
-                    if (Long.compareUnsigned(currK[pL], currK[pR]) <= 0) {
-                        destK[out] = currK[pL];
-                        destV[out] = currV[pL++];
-                    } else {
-                        destK[out] = currK[pR];
-                        destV[out] = currV[pR++];
-                    }
-                    out++;
-                }
-
-                while (pL < mid) { destK[out] = currK[pL]; destV[out] = currV[pL++]; out++; }
-                while (pR < right) { destK[out] = currK[pR]; destV[out] = currV[pR++]; out++; }
+            int size = hi - lo;
+            if (size <= 1 || shift < 0) {
+                return;
             }
 
-            long[] tempK = currK; currK = destK; destK = tempK;
-            long[] tempV = currV; currV = destV; destV = tempV;
-        }
+            if (size <= INSERTION_THRESHOLD) {
+                // offset = lo, length = size
+                insertionSmall(k, v, lo, size);
+                return;
+            }
 
-        if (currK != srcK) {
-            System.arraycopy(currK, 0, srcK, 0, n);
-            System.arraycopy(currV, 0, srcV, 0, n);
+            int[] count = new int[RADIX + 1];
+
+            // Histogram
+            for (int i = lo; i < hi; i++) {
+                int digit = (int)((k[i] >>> shift) & MASK);
+                count[digit + 1]++;
+            }
+
+            // Prefix sum
+            for (int r = 0; r < RADIX; r++) {
+                count[r + 1] += count[r];
+            }
+
+            int[] starts = java.util.Arrays.copyOf(count, count.length);
+
+            // Scatter into tk/tv, 0-based [0..size)
+            for (int i = lo; i < hi; i++) {
+                int digit = (int)((k[i] >>> shift) & MASK);
+                int pos   = count[digit]++;   // 0..size-1
+                tk[pos]   = k[i];
+                tv[pos]   = v[i];
+            }
+
+            // Copy back into k[lo..hi), v[lo..hi)
+            System.arraycopy(tk, 0, k, lo, size);
+            System.arraycopy(tv, 0, v, lo, size);
+
+            // Recurse into buckets
+            for (int r = 0; r < RADIX; r++) {
+                int childLo = lo + starts[r];
+                int childHi = lo + starts[r + 1];
+                if (childHi - childLo > 1) {
+                    sort(k, v, tk, tv, childLo, childHi, shift - BITS);
+                }
+            }
         }
     }
+    
+    
 
     private static void swap(long[] k, long[] v, int i, int j) {
         long tempK = k[i]; k[i] = k[j]; k[j] = tempK;

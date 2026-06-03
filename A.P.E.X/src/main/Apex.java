@@ -5,7 +5,6 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -27,145 +26,410 @@ import scatter.scattered;
 
 
 /*
- * Apex : Adaptive Parallel Entropic Dispatch {MSD-LSD}
- *
- * High-performance entropy-adaptive radix sorting for large-scale 64-bit
- * key/value datasets on modern multi-core processors.
- *
- * Core idea:
- *   Apex dynamically shapes radix partition topology around observed entropy,
- *   selecting optimal MSD bit windows to maximize partition quality,
- *   improve locality, balance parallel work distribution,
- *   and minimize unnecessary memory movement and radix passes.
- *
- * Architectural model:
- *   - Entropy-adaptive MSD partition planning
- *   - Parallel radix scatter and partition execution
- *   - Hybrid MSD-LSD radix pipeline
- *   - Locality-aware memory dispatch and execution routing
- *   - Adaptive in-place and off-heap processing strategies
- *
- * A : Adaptive
- *     - dynamically selects radix windows, partition geometry,
- *       execution thresholds, and processing strategies from
- *       observed key distributions and runtime characteristics
- *
- * P : Parallel
- *     - fully parallel histogramming, scatter, partition execution,
- *       and LSD processing across all available CPU cores
- *
- * E : Entropic
- *     - analyzes entropy distribution across bit regions to identify
- *       high-information radix windows while avoiding degenerate
- *       or low-cardinality partition collapse
- *
- * X : Dispatch
- *     - coordinates adaptive execution paths, partition scheduling,
- *       memory locality, and heap/off-heap execution strategies
- *
- * Entropy determination engine:
- *   Apex uses bitwise statistical analysis to determine effective
- *   entropy regions and eliminate non-contributing radix windows.
- *
- *   Bitwise entropy reduction includes:
- *     - XOR analysis to detect changing bit regions
- *     - AND reduction to identify globally shared bit patterns
- *     - OR reduction to identify globally active bit regions
- *     - Constant-prefix elimination
- *     - Sparse-entropy detection
- *     - Delayed-entropy recognition
- *     - Duplicate-density detection
- *
- *   These analyses allow Apex to:
- *     - skip entropy-free radix passes
- *     - avoid pathological partition fanout
- *     - reduce tiny partition explosion
- *     - improve cache locality and partition balance
- *     - dynamically relocate MSD extraction windows
- *
- * Hybrid radix pipeline:
- *   - MSD radix scatter for global entropy-guided partitioning
- *   - LSD radix refinement for efficient in-partition ordering
- *   - Adaptive tuple-cycle optimization for compact entropy domains
- *   - Dynamic fallback paths for pathological distributions
- *
- * Features:
- *   - Entropy-aware MSD window planning
- *   - Adaptive radix-width selection
- *   - Runtime auto-tuning of radix geometry and thresholds
- *   - Packed tuple-cycle execution
- *   - Locality-aware partition scheduling
- *   - Hybrid heap and off-heap execution
- *   - Parallel histogram, scatter, and partition processing
- *   - Adaptive tiny-partition handling
- *   - Degenerate partition mitigation
- *
- *  Sparse entropy tuple projection:
- *  - Apex can dynamically remap sparse distributed entropy regions
- *   into compact tuple domains, reducing radix space, histogram size,
- *   and memory traffic for low-density entropy distributions.  
- *  - Tuple-cycle execution is adaptively enabled only when projected
- *   entropy density produces a net locality and radix-efficiency gain.
- *
- * Designed for:
- *   - Large-scale 64-bit sorting workloads
- *   - High-core-count desktop and server processors
- *   - Memory-bandwidth-sensitive workloads
- *   - Adversarial and real-world data distributions
- *
- * Robustness:
- *   Maintains stable behavior across:
- *     - duplicates and low-cardinality datasets
- *     - sparse and delayed entropy
- *     - clustered and skewed partitions
- *     - sorted and partially sorted runs
- *     - pathological radix distributions
- *     - highly imbalanced partition topologies
- *
- * Philosophy:
- *   Apex prioritizes adaptive partition quality, locality,
- *   scalability, and memory efficiency over fixed radix geometry
- *   or microbenchmark specialization.
- *
- *   The architecture is designed for experimentation,
- *   extensibility, and deep runtime adaptability rather than
- *   static one-size-fits-all radix behavior.
- */
- /*
---enable-native-access=ALL-UNNAMED
---enable-preview
- -XX:MaxDirectMemorySize=22g
- -Xmx8G
---add-modules jdk.incubator.vector
--XX:UseAVX=2 | 3 
--XX:+UseLargePages
--XX:LargePageSizeInBytes=2m 
+ # A.P.E.X.
 
- *   visualizer: https://strmckr.github.io/A.P.E.X/
- *   github: https://github.com/StrmCkr/A.P.E.X/
- *
- * Options:
- *   mode          Single data mode for default run.
- *   modes         Multiple modes or mode range for default run.
- *   records       Default-run record count, list, or range.
- *   msd           MSD_BITS auto-tune range.
- *   lsd           LSD_BITS auto-tune range.
- *   tiny          Tiny partition threshold auto-tune range.
- *   tupleBits     Entropy tuple dimension cap for direct tuple-space passes.
- *   config        Locked config: MSD_BITS,LSD_BITS,TINY. Bypasses auto-tune.
- *   threads       Worker thread count. auto uses available processors.
- *   largePermits  Concurrent off-heap large partitions. auto uses max(1, threads/8).
- *   workStealing  Dynamic largest-first LSD bucket scheduling. true by default.
- *   workBatch     Work items claimed per shared queue hit.
- *   inPlaceMsd    Experimental one-buffer MSD scatter.
- *   inPlaceTile   Records read per in-place scatter tile.
- *   tuplePacking  Forces packed sparse entropy cycles. Auto-packing still runs
- *                 when it reduces cycle count.
- *   heapScratch   Max heap-backed scratch records per worker before off-heap path.
- *   tuneRecords   Record count used during the single auto-tune pass.
- *   warmupRecords Selected-config warmup record count.
- *   sweep         Run the full mode sweep instead of the default selected-mode run.
- *   sweepRecords  Records per mode during sweep.
+**Adaptive Parallel Extremal Dispatch**
+
+A.P.E.X. is a high-performance Java sorting framework for large fixed-width
+64-bit key/value record datasets. It uses descriptor-driven radix planning,
+parallel scatter, per-bucket dispatch, tuple projection, tiny-sort fallbacks,
+and local refinement to sort unsigned 64-bit keys while avoiding unnecessary
+passes over bits that are already resolved.
+
+The project also includes an interactive browser visualizer that explains the
+execution plan: source array, MSD scatter, tiny routes, tuple routes, LSD
+refinement, global/bucket reverse paths, and final sorted placement.
+
+## Documentation
+
+- [Usage Guide](usage.md): build commands, runtime options, and common runs
+- [Comparison Guide](comparison.md): benchmark harness, baselines, and reporting
+- [Operation Model](operation-execution.md): execution flow, dispatch rules, and
+  math-paper reference
+
+## Name
+
+**A - Adaptive**
+
+Execution changes with the observed input structure: radix geometry, bucket
+routes, tuple use, tiny thresholds, and refinement strategy are selected from
+the data rather than fixed up front.
+
+**P - Parallel**
+
+Histogramming, scatter, bucket refinement, and work scheduling are designed for
+multi-core execution.
+
+**E - Extremal**
+
+A.P.E.X. uses per-bucket extremal descriptors, especially bitwise `OR` and
+bitwise `AND`, to identify which key bits still vary. The variable-bit mask is:
+
+```text
+VBM = OR ^ AND
+```
+
+Only unresolved bits continue into refinement.
+
+**X - Dispatch**
+
+Buckets are routed to the cheapest applicable path: already done, global
+reverse, bucket reverse, tiny sort, tuple projection, LSD cycles, or LSD with a
+tuple tail.
+
+## Core Idea
+
+Most radix sort pipelines pay for fixed key width. A.P.E.X. pays for remaining
+structure.
+
+For each partition, A.P.E.X. tracks:
+
+- record count
+- bitwise `OR`
+- bitwise `AND`
+- variable-bit mask
+- local order classification
+
+That lets the sorter eliminate constant bits, skip resolved buckets, reverse
+monotonic descending regions, and collapse compact sparse variability into
+tuple domains.
+
+## Execution Model
+
+1. **Global order scan**
+
+   Whole-input ascending data is accepted immediately. Whole-input descending
+   data takes the **global reverse** fast path.
+
+2. **Adaptive MSD planning**
+
+   A.P.E.X. chooses an MSD extraction window from observed high-information
+   regions instead of blindly using the top bits.
+
+3. **Parallel MSD scatter**
+
+   Threads read contiguous blocks and scatter records into MSD buckets.
+
+4. **Bucket classification**
+
+   Each bucket is marked as empty, all-equal, ascending, descending, or mixed.
+   Ascending buckets are skipped. Descending buckets take the **bucket reverse**
+   path.
+
+5. **Refinement dispatch**
+
+   Mixed buckets are routed to one of:
+
+   - tiny sort
+   - direct tuple projection
+   - LSD radix cycles
+   - LSD cycles followed by tuple-tail projection
+
+6. **Final assembly**
+
+   Completed buckets land in final sorted order.
+
+## Tiny Sort Routes
+
+Tiny sort is a bucket-level fallback for partitions below the configured tiny
+threshold. Inside that route, the implementation selects a function by size:
+
+| Size | Tiny function |
+| ---: | --- |
+| `1..23` | `insertionSmall` |
+| `24..63` | `binaryInsertionSmall` |
+| `64..127` | `quickSort` |
+| `128..191` | `threeWayQuickSort` |
+| `192+` | `MsdRadix8KV` |
+
+The configured tiny threshold controls which bucket sizes enter the tiny route.
+For example, `tiny=128` can reach the first three tiny functions; `tiny=1024`
+can reach all five.
+
+## Tuple Projection
+
+Tuple projection uses the active variable bits as an exact compact index:
+
+```text
+tupleIndex = Long.compress(key, variableMask)
+tupleRadix = 1 << bitCount(variableMask)
+```
+
+A direct tuple pass counts tuple indexes, prefix-sums their target ranges, and
+places records into those ranges. It is not a comparison sort. After LSD cycles,
+a tuple-tail pass can terminate remaining sparse variable bits when the tuple
+space fits the configured cap.
+
+## Visualizer
+
+The visualizer is a static browser app:
+
+- [index.html](index.html)
+- [app.js](app.js)
+- [styles.css](styles.css)
+
+Open `index.html` locally, or publish the repository with GitHub Pages. The
+current project link is:
+
+[https://strmckr.github.io/A.P.E.X/](https://strmckr.github.io/A.P.E.X/)
+
+Visualizer controls include:
+
+- `N` record count, up to `1,000,000`
+- data type / topology
+- MSD bits
+- LSD bits
+- thread count
+- tiny threshold
+- tuple bit cap
+- tuple on/off
+- play, step, reset
+
+The visualizer is educational, but its routes are aligned with the Java planner:
+global reverse, bucket reverse, tiny subroutes, tuple direct/tail, LSD cycles,
+and final bucket placement.
+
+## Requirements
+
+Recommended:
+
+- JDK 25 or newer
+- `jdk.incubator.vector`
+- preview enabled for builds/runs that require it
+- enough heap and direct memory for the selected record count
+
+A.P.E.X. stores records as 16-byte key/value pairs. Large runs can allocate both
+source and destination buffers, so plan memory as roughly:
+
+```text
+records * 16 bytes * 2
+```
+
+Example: `100m` records can require about 3 GiB just for source/destination
+record buffers before other runtime overhead.
+
+## Build
+
+PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force out | Out-Null
+$sources = Get-ChildItem -Recurse src -Filter *.java | ForEach-Object { $_.FullName }
+javac --enable-preview --release 25 --add-modules jdk.incubator.vector -d out $sources
+```
+
+Bash:
+
+```bash
+mkdir -p out
+javac --enable-preview --release 25 --add-modules jdk.incubator.vector -d out $(find src -name "*.java")
+```
+
+If you are compiling with a different preview-capable JDK, replace `25` with
+your installed JDK release.
+
+## Usage
+
+Run the main sorter:
+
+```bash
+java \
+  --enable-preview \
+  --enable-native-access=ALL-UNNAMED \
+  --add-modules jdk.incubator.vector \
+  -Xmx16G \
+  -XX:MaxDirectMemorySize=80g \
+  -cp out \
+  main.Apex mode=RANDOM records=10m threads=16
+```
+
+PowerShell single-line example:
+
+```powershell
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -Xmx16G -XX:MaxDirectMemorySize=80g -cp out main.Apex mode=RANDOM records=10m threads=16
+```
+
+### Basic Runs
+
+Default mode and mode-dependent record count:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex
+```
+
+Explicit data mode and record count:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex mode=LOW_BITS_ONLY records=50m
+```
+
+Multiple modes:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex modes=RANDOM,DUPLICATES,SPARSE_ENTROPY_EXPLOSION records=10m
+```
+
+Mode range:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex modes=RANDOM..ZIPFIANISH records=5m
+```
+
+### Record Counts
+
+Record counts accept suffixes:
+
+- `k` = thousand
+- `m` = million
+- `g` = billion
+
+Lists and ranges are supported:
+
+```bash
+records=1m,10m,100m
+records=1m..16m:1m
+```
+
+### Configuration
+
+Auto-tuning is the default. It searches MSD, LSD, and tiny threshold ranges:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex mode=RANDOM records=10m msd=11..13 lsd=12..17 tiny=32..1024
+```
+
+Use a locked configuration for reproducible experiments:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex mode=RANDOM records=10m config=11,12,128
+```
+
+The locked format is:
+
+```text
+config=MSD_BITS,LSD_BITS,TINY_THRESHOLD
+```
+
+### Parallelism
+
+```bash
+threads=auto
+threads=16
+workStealing=true
+workBatch=8
+```
+
+Work stealing dynamically redistributes bucket refinement when buckets are
+imbalanced.
+
+### Tuples
+
+```bash
+tupleBits=9
+tuplePacking=true
+```
+
+`tupleBits` caps direct tuple-space width. The current maximum cap is `16`.
+`tuplePacking=true` forces packed sparse tuple cycles; automatic packed cycles
+can still be selected when they reduce cycle count.
+
+### Memory
+
+```bash
+heapScratch=1048576
+largePermits=4
+```
+
+`heapScratch` controls when worker scratch spills toward the off-heap path.
+`largePermits` limits concurrent large off-heap partitions. If omitted, A.P.E.X.
+chooses an automatic permit count from the thread count.
+
+### Benchmark Sweep
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex sweep=true sweepRecords=100m
+```
+
+Sweep mode runs all `DataMode` values using the selected or auto-tuned
+configuration.
+
+## Runtime Options
+
+| Option | Meaning |
+| --- | --- |
+| `mode` | Single data mode |
+| `modes` | Comma list, `all`, or enum range such as `RANDOM..ZIPFIANISH` |
+| `records`, `record`, `n` | Record count, list, or range |
+| `config`, `locked` | Locked `MSD,LSD,TINY` configuration |
+| `msd` | MSD auto-tune bit range |
+| `lsd` | LSD auto-tune bit range |
+| `tiny` | Tiny threshold auto-tune range |
+| `threads` | Worker threads, or `auto` |
+| `workStealing` | Enable/disable LSD work stealing |
+| `workBatch` | Work-steal batch size |
+| `tupleBits` | Direct tuple bit cap |
+| `tuplePacking` | Force packed tuple cycles |
+| `heapScratch` | Max heap scratch records per worker |
+| `largePermits` | Concurrent large partition permits |
+| `localMsdBits` | Override local MSD repartition width |
+| `tuneRecords` | Record count for auto-tuning |
+| `warmupRecords` | Warmup record count for selected config |
+| `sweep` | Run all data modes |
+| `sweepRecords` | Record count for sweep mode |
+
+Boolean options accept values such as `true`, `yes`, `1`, and `on`.
+
+## Data Modes
+
+The generator includes many topologies for normal, skewed, sparse, duplicate,
+pathological, and adversarial distributions. Common examples:
+
+- `RANDOM`
+- `SORTED`
+- `REVERSE`
+- `DUPLICATES`
+- `LOW_BITS_ONLY`
+- `HIGH_BITS_ONLY`
+- `FEW_UNIQUE_VALUES`
+- `DESCENDING_BLOCKS`
+- `TINY_PARTITIONS_STRESS`
+- `SPARSE_ENTROPY_EXPLOSION`
+- `PREFIX_CONSTANT_RANDOM_TAIL`
+- `LOW_CARDINALITY_HIGH_VOLUME`
+
+Run with `modes=all` to cover every enum value.
+
+## Repository Layout
+
+```text
+src/main/          Apex entry point and orchestration
+src/MSD/           Adaptive MSD bucket planning
+src/scatter/       Parallel MSD scatter
+src/LSD/           Bucket refinement and work scheduling
+src/Tuples/        Tuple projection and tuple-tail logic
+src/tinysorts/     Tiny partition sort functions
+src/generator/     Data modes and topology generation
+src/Tools/         Utilities and verification
+src/Comparison/    Optional benchmark comparison harness
+usage.md           Command-line usage guide
+comparison.md      Benchmark comparison guide
+operation-execution.md  Operation model and math-paper reference
+index.html         Interactive visualizer
+app.js             Visualizer model and rendering
+styles.css         Visualizer styling
+```
+
+## Publication Notes
+
+A.P.E.X. is a research-oriented implementation. It is intended for algorithm
+experimentation, performance analysis, and visualization of adaptive radix
+dispatch behavior. Results depend heavily on CPU core count, memory bandwidth,
+JDK version, JVM flags, and dataset topology.
+
+## License
+
+GNU General Public License v3.0. See [LICENSE](LICENSE).
+
  */
 public class Apex {
 
@@ -173,7 +437,10 @@ public class Apex {
             "apex.threads",
             Runtime.getRuntime().availableProcessors()
     );
-    public static final int THREADS_PER_DOMAINGROUP = Math.max(1, THREADS / 2);
+
+    public static int threadsPerDomainGroup() {
+        return Math.max(1, THREADS / 2);
+    }
     
     // 🚀 Symmetrical Hardware-Adaptive Species: Instantly visible across all classes
     @SuppressWarnings({"removal", "preview"})
@@ -183,7 +450,7 @@ public class Apex {
 
    public static final int RECORD_BYTES = 16;
    public static final long SEED = 0x9E3779B97F4A7C15L;
-   public static final long DEFAULT_RECORDS = 500_000_000L;
+   public static final long DEFAULT_RECORDS = 100_000_000L;
    public static final long TUNE_RECORDS = 10_000_000L;
    public static final long WARMUP_RECORDS = 100_000_000L;
    public static int MAX_HEAP_SCRATCH_RECORDS = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
@@ -202,6 +469,7 @@ public class Apex {
    public  static int LOCAL_MSD_MIN_RECORDS = Integer.getInteger("apex.localMsdMinRecords", 1_048_576);
    public  static int LOCAL_MSD_MIN_PASSES = Integer.getInteger("apex.localMsdMinPasses", 2);
    public  static int LOCAL_MSD_MIN_WINDOW_BITS = Integer.getInteger("apex.localMsdMinWindowBits", 2);
+   public  static int LOCAL_MSD_BITS = Integer.getInteger("apex.localMsdBits", 0);
    public static int LOCAL_MSD_MIN_SHARE_DIVISOR = Integer.getInteger(
 	        "apex.localMsdMinShareDivisor", 
 	        Math.max(2, THREADS / 2)
@@ -210,6 +478,7 @@ public class Apex {
 	        "apex.workBatch", 
 	        Math.max(4, THREADS / 2)
 	);   
+  
    
    public static int LARGE_PARTITION_PERMIT_COUNT = 1;
    public static Semaphore LARGE_PARTITION_PERMITS = new Semaphore(1);
@@ -218,10 +487,13 @@ public class Apex {
    public  static final byte BUCKET_EMPTY = 0;
    public  static final byte BUCKET_ALL_EQUAL = 1;
    public  static final byte BUCKET_MIXED = 2;
+   public  static final byte BUCKET_ASCENDING = 3;
+   public  static final byte BUCKET_DESCENDING = 4;
      
    public static boolean isL3CacheLocal(int currentWorkerId, int targetWorkerId) {
-       int currentDomainGroup = currentWorkerId / THREADS_PER_DOMAINGROUP;
-       int targetDomainGroup = targetWorkerId / THREADS_PER_DOMAINGROUP;
+       int domainGroupSize = threadsPerDomainGroup();
+       int currentDomainGroup = currentWorkerId / domainGroupSize;
+       int targetDomainGroup = targetWorkerId / domainGroupSize;
        return (currentDomainGroup == targetDomainGroup);
    }
 
@@ -233,6 +505,7 @@ public class Apex {
        private long p09, p10, p11, p12, p13, p14, p15, p16;
        public long[] k2 = new long[1024];
        public long[] v2 = new long[1024];
+       
 
        // --- Cache Line Padding Group 2: Isolate Dense Core Histograms ---
        private long p17, p18, p19, p20, p21, p22, p23, p24;
@@ -292,13 +565,7 @@ public class Apex {
     public static void main(String[] args) throws Exception {
         Options options = runoptions.parseOptions(args);
 
-        THREADS = options.threads;
-        LSD_WORK_STEALING = options.lsdWorkStealing;
-        WORK_STEAL_BATCH = options.workStealBatch;
-        PACKED_TUPLE_CYCLES = options.packedTupleCycles;       
-        DIRECT_TUPLE_BITS = options.directTupleBits;
-        MAX_HEAP_SCRATCH_RECORDS = options.heapScratchRecords;
-        tools.configureLargePartitionPermits(options);
+        runoptions.applyApexSettings(options);
         POOL = Executors.newFixedThreadPool(THREADS);
 
         try {
@@ -318,8 +585,9 @@ public class Apex {
             System.out.println("Local MSD repartition: " + LOCAL_MSD_REPARTITION +
                     " minRecords=" + LOCAL_MSD_MIN_RECORDS +
                     " minPasses=" + LOCAL_MSD_MIN_PASSES +
+                    " bits=" + (LOCAL_MSD_BITS > 0 ? LOCAL_MSD_BITS : "config") +
                     " minWindowBits=" + LOCAL_MSD_MIN_WINDOW_BITS +
-                    " minShare=1/" + LOCAL_MSD_MIN_SHARE_DIVISOR);
+                    " minShare=1/" + LOCAL_MSD_MIN_SHARE_DIVISOR);            
             System.out.println("Direct tuple bits: " + DIRECT_TUPLE_BITS);
             System.out.println("Small tuple lookup bits: 2.." + SMALL_TUPLE_LOOKUP_BITS);
             System.out.println("Heap scratch records: " + MAX_HEAP_SCRATCH_RECORDS);
@@ -334,7 +602,9 @@ public class Apex {
             Config selectedConfig = selectRunConfig(alignment, options);
 
             if (options.sweep) {
-                runModesOnce(selectedConfig, options.sweepRecords, alignment, Arrays.asList(DataMode.values()));
+                for (DataMode mode : DataMode.values()) {
+                    runOneMode(mode, options.sweepRecords, alignment, selectedConfig, options);
+                }
             } else {
                 for (long records : options.recordsList) {
                     for (DataMode mode : options.modes) {
@@ -387,7 +657,7 @@ public class Apex {
         System.out.println("Records: " + records);
         DataTopology.printTopology(mode);
         System.out.println("Config: " + cfg);
-        System.out.printf("Data buffers: %.2f GiB (src+dst; src reused as LSD scratch)%n",
+        System.out.printf("Data buffers: %.2f GiB max (src+dst; dst allocated lazily)%n",
                     dataBufferGiB(records));
 
         if (records == 0 || mode == DataMode.EMPTY) {
@@ -400,25 +670,36 @@ public class Apex {
         try (Arena arena = Arena.ofShared()) {
             long bytes = tools.bytesForRecords(records);
             MemorySegment src = arena.allocate(bytes, alignment);
-            MemorySegment dst = arena.allocate(bytes, alignment);
+            MemorySegment dst = null;
 
             System.out.println("Initializing: " + records + " records");
             initiatedata.initData(src, records, mode);
 
             Timer total = Timer.start();
-            MemorySegment sorted = tryInputOrderFastPath(src, dst, records, true);
+            int inputOrder = detectInputOrderFastPath(src, records, true);
+            MemorySegment sorted = null;
 
-            if (sorted == null) {
+            if (inputOrder == tools.ORDER_ASCENDING) {
+                sorted = src;
+                System.out.println("MSD plan/scatter/LSD skipped (input already ascending)");
+            } else if (inputOrder == tools.ORDER_DESCENDING) {
+                dst = arena.allocate(bytes, alignment);
+                Timer t0 = Timer.start();
+                tools.reverseCopyRecords(src, 0, dst, 0, records);
+                sorted = dst;
+                report("Descending reverse", records, t0);
+            } else {               
                 Timer t0 = Timer.start();
                 MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
                 report("MSD adaptive plan", records, t0);
                 printMsdBucketStats(msdPlan, cfg);
 
-                sorted = dst;
+                MemorySegment lsdScratch = src;
                 if (msdPlan.inputAscending) {
                     sorted = src;
                     System.out.println("MSD/LSD skipped (input already ascending)");
                 } else if (msdPlan.inputDescending) {
+                    dst = arena.allocate(bytes, alignment);
                     t0 = Timer.start();
                     tools.reverseCopyRecords(src, 0, dst, 0, records);
                     sorted = dst;
@@ -426,13 +707,20 @@ public class Apex {
                 } else if (sourceAlreadyFinal(msdPlan, cfg)) {
                     sorted = src;
                     System.out.println("MSD scatter skipped (source already final)");
+                } else if (singleBucketCanRefineInSource(msdPlan, records, cfg)) {
+                    sorted = src;
+                    if (planNeedsOffHeapScratch(msdPlan, cfg)) {
+                        dst = arena.allocate(bytes, alignment);
+                        lsdScratch = dst;
+                    }
+                    System.out.println("MSD scatter skipped (single bucket; refining source)");
                 } else {
+                    dst = arena.allocate(bytes, alignment);
+                    sorted = dst;
                     t0 = Timer.start();
                     scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
                     report("MSD scatter", records, t0);
                 }
-
-                MemorySegment lsdScratch = src;                
 
                 if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
                     t0 = Timer.start();
@@ -455,10 +743,6 @@ public class Apex {
 
     static double dataBufferGiB(long records) {
         return (records * (double) RECORD_BYTES * 2.0) / (1024.0 * 1024.0 * 1024.0);
-    }
-
-    static double singleDataBufferGiB(long records) {
-        return (records * (double) RECORD_BYTES) / (1024.0 * 1024.0 * 1024.0);
     }
 
     static Config autoTune(long alignment, DataMode mode, long records, Options options) throws Exception {
@@ -600,13 +884,7 @@ public class Apex {
             long records,
             boolean announce
     ) throws Exception {
-        Timer scan = announce ? Timer.start() : null;
-        int order = tools.detectMonotonicOrder(src, records);
-
-        if (announce) {
-            report("Input order scan", records, scan);
-        }
-
+        int order = detectInputOrderFastPath(src, records, announce);
         if (order == tools.ORDER_MIXED) {
             return null;
         }
@@ -627,6 +905,32 @@ public class Apex {
         return dst;
     }
 
+    public static int detectInputOrderFastPath(
+            MemorySegment src,
+            long records,
+            boolean announce
+    ) {
+        Timer probe = announce ? Timer.start() : null;
+        int order = tools.quickOrderProbe(src, records);
+
+        if (announce) {
+            report("Input order probe", records, probe);
+        }
+
+        if (order == tools.ORDER_MIXED) {
+            return tools.ORDER_MIXED;
+        }
+
+        Timer scan = announce ? Timer.start() : null;
+        order = tools.detectMonotonicOrder(src, records);
+
+        if (announce) {
+            report("Input order scan", records, scan);
+        }
+
+        return order;
+    }
+
     static double benchmarkCandidate(
             Config cfg,
             long testN,
@@ -642,29 +946,7 @@ public class Apex {
             initiatedata.initData(src, testN, mode);
 
             long start = System.nanoTime();
-            MemorySegment sorted = tryInputOrderFastPath(src, dst, testN, false);
-
-            if (sorted == null) {
-                MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, testN, cfg);
-
-                sorted = dst;
-                if (msdPlan.inputAscending) {
-                    sorted = src;
-                } else if (msdPlan.inputDescending) {
-                    tools.reverseCopyRecords(src, 0, dst, 0, testN);
-                    sorted = dst;
-                } else if (sourceAlreadyFinal(msdPlan, cfg)) {
-                    sorted = src;
-                } else {
-                    scattered.scatterIntoMsdBuckets(src, dst, testN, msdPlan, cfg);
-                }
-
-                MemorySegment lsdScratch = src;
-
-                if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
-                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
-                }
-            }
+            MemorySegment sorted = sortPipeline(src, dst, testN, cfg);
 
             double sec = elapsed(start);
 
@@ -672,6 +954,44 @@ public class Apex {
 
             return sec;
         }
+    }
+   
+
+    public static MemorySegment sortPipeline(
+            MemorySegment src,
+            MemorySegment dst,
+            long records,
+            Config cfg
+    ) throws Exception {
+        MemorySegment sorted = tryInputOrderFastPath(src, dst, records, false);
+
+        if (sorted != null) {
+            return sorted;
+        }
+
+        MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
+
+        sorted = dst;
+        MemorySegment lsdScratch = src;
+        if (msdPlan.inputAscending) {
+            sorted = src;
+        } else if (msdPlan.inputDescending) {
+            tools.reverseCopyRecords(src, 0, dst, 0, records);
+            sorted = dst;
+        } else if (sourceAlreadyFinal(msdPlan, cfg)) {
+            sorted = src;
+        } else if (singleBucketCanRefineInSource(msdPlan, records, cfg)) {
+            sorted = src;
+            lsdScratch = dst;
+        } else {
+            scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+        }
+
+        if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
+            lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+        }
+
+        return sorted;
     }
 
     public static boolean sourceAlreadyFinal(MsdBucketPlan plan, Config cfg) {
@@ -691,9 +1011,29 @@ public class Apex {
         return true;
     }
 
+    public static boolean singleBucketCanRefineInSource(MsdBucketPlan plan, long records, Config cfg) {
+        if (plan.hasLocalMsd) {
+            return false;
+        }
+
+        int nonEmpty = 0;
+        for (int b = 0; b < cfg.msdBucketCount; b++) {
+            if (plan.sizes[b] == 0) {
+                continue;
+            }
+
+            nonEmpty++;
+            if (nonEmpty > 1 || plan.starts[b] != 0L || plan.sizes[b] != records) {
+                return false;
+            }
+        }
+
+        return nonEmpty == 1;
+    }
+
     public static boolean planNeedsRefinement(MsdBucketPlan plan, Config cfg) {
         for (int b = 0; b < cfg.msdBucketCount; b++) {
-            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+            if (lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, b)) {
                 return true;
             }
         }
@@ -712,9 +1052,13 @@ public class Apex {
                 int[] childSizes = plan.localSizes[b];
                 long[] childVariableMasks = plan.localVariableMasks[b];
 
-                for (int child = 0; child < cfg.msdBucketCount; child++) {
+                for (int child = 0; child < childSizes.length; child++) {
                     int childSize = childSizes[child];
-                    if (childSize <= MAX_HEAP_SCRATCH_RECORDS ||
+                    boolean childDescending = plan.localDescending[b] != null &&
+                            plan.localDescending[b][child];
+                    if (!lsdbucketplan.localChildHasLsdWork(plan, b, child) ||
+                            childDescending ||
+                            childSize <= MAX_HEAP_SCRATCH_RECORDS ||
                             childSize < cfg.tinyPartitionThreshold ||
                             childVariableMasks[child] == 0L) {
                         continue;
@@ -778,10 +1122,15 @@ public class Apex {
                 mixed++;
             }
 
-            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, i)) {
+            if (lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, i)) {
                 refinementBuckets++;
+            }
 
-                if (s < cfg.tinyPartitionThreshold) {
+            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, i)) {
+
+                if (plan.bucketDescending[i]) {
+                    refinementWorkItems++;
+                } else if (s < cfg.tinyPartitionThreshold) {
                     refinementWorkItems++;
                     tinySortBuckets++;
                 } else {
@@ -792,16 +1141,22 @@ public class Apex {
                         int[] childSizes = plan.localSizes[i];
                         long[] childVariableMasks = plan.localVariableMasks[i];
 
-                        for (int child = 0; child < cfg.msdBucketCount; child++) {
-                            int childSize = childSizes[child];
-                            long childVariableMask = childVariableMasks[child];
-
-                            if (childSize <= 1 || childVariableMask == 0L) {
+                        for (int child = 0; child < childSizes.length; child++) {
+                            if (!lsdbucketplan.localChildHasLsdWork(plan, i, child)) {
                                 continue;
                             }
 
+                            int childSize = childSizes[child];
+                            long childVariableMask = childVariableMasks[child];
+                            boolean childDescending = plan.localDescending[i] != null &&
+                                    plan.localDescending[i][child];
+
                             refinementWorkItems++;
                             localMsdChildWorkItems++;
+
+                            if (childDescending) {
+                                continue;
+                            }
 
                             if (childSize < cfg.tinyPartitionThreshold) {
                                 tinySortBuckets++;
@@ -927,64 +1282,6 @@ public class Apex {
         System.out.println("Total bucketed: " + total);
     }
 
-    public static void runModesOnce(Config cfg, long n, long alignment, List<DataMode> modes) throws Exception {
-        System.out.println("=== SINGLE FULL MODE RUN START ===");
-        System.out.println("Records per mode: " + n);
-        System.out.println("Config: " + cfg);
-        System.out.println("Modes: " + modes.size());
-
-        for (DataMode mode : modes) {
-            if (mode == DataMode.EMPTY) {
-                System.out.println("[SKIP] EMPTY");
-                continue;
-            }
-
-            long startAll = System.nanoTime();
-
-            try (Arena arena = Arena.ofShared()) {
-                long bytes = tools.bytesForRecords(n);
-                MemorySegment src = arena.allocate(bytes, alignment);
-                MemorySegment dst = arena.allocate(bytes, alignment);
-
-                initiatedata.initData(src, n, mode);
-
-                MemorySegment sorted = tryInputOrderFastPath(src, dst, n, false);
-
-                if (sorted == null) {
-                    MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
-
-                    sorted = dst;
-                    if (plan.inputAscending) {
-                        sorted = src;
-                    } else if (plan.inputDescending) {                       
-                        tools.reverseCopyRecords(src, 0, dst, 0, n);
-                        sorted = dst;
-                    } else if (sourceAlreadyFinal(plan, cfg)) {
-                        sorted = src;
-                    } else {
-                        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
-                    }
-
-                    MemorySegment lsdScratch = src;                   
-
-                    if (!plan.inputAscending && !plan.inputDescending && planNeedsRefinement(plan, cfg)) {
-                        lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, plan, cfg);
-                    }
-                }
-
-                verifier.verify(sorted, n, mode);
-            }
-
-            double sec = (System.nanoTime() - startAll) / 1e9;
-            double mps = (n / sec) / 1e6;
-
-            System.out.printf("MODE %-28s | %.3f sec | %.2f M/sec%n",
-                    mode, sec, mps);
-        }
-
-        System.out.println("=== SINGLE FULL MODE RUN COMPLETE ===");
-    }
-
     static final class Timer {
         long start;
 
@@ -1005,45 +1302,7 @@ public class Apex {
         System.out.printf("%-30s %.3f sec | %.2f M rec/sec%n", label, sec, rate);
     }
 
-    static long[] sampleKeys(MemorySegment seg, long start, int size, int maxSamples) {
-        int n = Math.min(size, maxSamples);
-        long[] out = new long[n];
-
-        long step = Math.max(1, size / n);
-
-        for (int i = 0; i < n; i++) {
-            long idx = start + ((long) i * step);
-            long p = idx << 4;
-            out[i] = seg.get(LONG, p);
-        }
-
-        return out;
-    }
-    
     public static void sort(MemorySegment src, MemorySegment dst, long n, Config cfg) throws Exception {
-        if (n <= 1) return;
-
-        int order = tools.detectMonotonicOrder(src, n);
-        if (order == tools.ORDER_ASCENDING) return;
-        if (order == tools.ORDER_DESCENDING) {
-            tools.reverseRecordsInPlace(src, 0L, n);
-            return;
-        }
-
-        if (n <= 15_000_000L) {
-            Config rawCacheCfg = new Config(12, 13, 128); 
-            MsdBucketPlan rawPlan = msdbucketplan.buildMsdBucketPlan(
-                histogram.buildhistogram.buildMsdHistograms(src, n, rawCacheCfg, 52), 
-                n, rawCacheCfg, 52
-            );
-            
-            scattered.scatterIntoMsdBuckets(src, dst, n, rawPlan, rawCacheCfg);
-            lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, rawPlan, rawCacheCfg);
-            return;
-        }
-
-        MsdBucketPlan plan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, n, cfg);
-        scattered.scatterIntoMsdBuckets(src, dst, n, plan, cfg);
-        lsdbucketplan.sortMsdBucketsWithLsdRadix(src, dst, plan, cfg);
+        sortPipeline(src, dst, n, cfg);
     }
 }

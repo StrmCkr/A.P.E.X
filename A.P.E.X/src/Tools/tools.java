@@ -5,11 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import Tuples.tuples;
-import config.runoptions.Options;
 import generator.DataMode;
 import main.Apex;
 
@@ -144,18 +141,6 @@ public class tools {
 
 	        return tuples.tupleIndex(key, bitMask, smallTuplePlan);
 	    }
-	
-	/*   public static void bulkCopyRecords(
-	            MemorySegment source,
-	            long sourceBase,
-	            MemorySegment target,
-	            long targetBase,
-	            int records
-	    ) {
-	        MemorySegment.copy(source, sourceBase, target, targetBase, tools.bytesForRecords(records));
-	    }*/
-	   
-	 
 	    /**
 	     * 🚀 Hardware-Adaptive Non-Temporal Parallel Bulk Copy Engine.
 	     * Divides memory blocks across thread workers, leveraging dynamic register widths
@@ -183,7 +168,7 @@ public class tools {
 	        }
 
 	        long recordsPerTask = records / copyTasks;
-	        java.util.ArrayList<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>(copyTasks);
+	        ArrayList<Future<?>> futures = new ArrayList<>(copyTasks);
 
 	        for (int t = 0; t < copyTasks; t++) {
 	            final int tid = t;
@@ -198,9 +183,7 @@ public class tools {
 	            }));
 	        }
 
-	        for (java.util.concurrent.Future<?> future : futures) {
-	            future.get();
-	        }
+	        waitForFutures(futures);
 	    }
 
 	    /**
@@ -312,7 +295,11 @@ public class tools {
 
 	  static final int QUICK_ORDER_RECORDS = 2_048;
 
-	  static int quickOrderProbe(MemorySegment data, long records) {
+	  public static int quickOrderProbe(MemorySegment data, long records) {
+	        if (records <= 1) {
+	            return ORDER_ASCENDING;
+	        }
+
 	        int adjacentRecords = (int) Math.min(records, QUICK_ORDER_RECORDS);
 	        long previous = data.get(Apex.LONG, 0);
 	        boolean ascending = true;
@@ -361,38 +348,67 @@ public class tools {
 	        return descending ? ORDER_DESCENDING : ORDER_MIXED;
 	    }
 
-	    static void copyRecordSlice(
-	            MemorySegment source,
-	            long sourceBase,
-	            MemorySegment target,
-	            long targetBase,
-	            long totalRecords,
-	            long recordsPerTask,
-	            int copyTasks,
-	            int task
-	    ) {
-	        long startRecord = (long) task * recordsPerTask;
-	        long count = (task == copyTasks - 1) ? (totalRecords - startRecord) : recordsPerTask;
-
-	        if (count <= 0) {
-	            return;
-	        }
-
-	        long offset = startRecord * Apex.RECORD_BYTES;
-	        MemorySegment.copy(source, sourceBase + offset, target, targetBase + offset, count * Apex.RECORD_BYTES);
-	    }
-
 	    // 🚀 Hardware-Adaptive Species Selector: Autotunes to 256-bit on 1800X, scales to 512-bit on 7950X
-	    private static final jdk.incubator.vector.VectorSpecies<Long> L_SPECIES = jdk.incubator.vector.LongVector.SPECIES_PREFERRED;
-	    // Calculate how many 16-byte records can fit into a single native hardware register
-	    private static final int RECORDS_PER_REG = L_SPECIES.vectorByteSize() >>> 4; 
-
 	        /**
 	         * 🚀 High-Velocity 8-Way Unrolled Reverse Copy Engine.
 	         * Processes exactly 8 distinct 16-byte records (128 bytes total) per loop pass,
 	         * maximizing memory bus utilization while maintaining perfect sequential ordering.
 	         */
 	        public static void reverseCopyRecords(
+	                MemorySegment source,
+	                long sourceBase,
+	                MemorySegment target,
+	                long targetBase,
+	                long records
+	        ) {
+	            if (Apex.POOL != null && Apex.THREADS > 1 && records >= PARALLEL_COPY_MIN_RECORDS) {
+	                try {
+	                    parallelReverseCopyRecords(source, sourceBase, target, targetBase, records);
+	                    return;
+	                } catch (Exception ex) {
+	                    throw new RuntimeException("Parallel reverse copy failed", ex);
+	                }
+	            }
+
+	            reverseCopyRecordsSequential(source, sourceBase, target, targetBase, records);
+	        }
+
+	        private static void parallelReverseCopyRecords(
+	                MemorySegment source,
+	                long sourceBase,
+	                MemorySegment target,
+	                long targetBase,
+	                long records
+	        ) throws Exception {
+	            if (records <= 0) {
+	                return;
+	            }
+
+	            long sliceRecords = Math.max(1L, COPY_SLICE_RECORDS);
+	            int copyTasks = (int) Math.min(
+	                    (long) Apex.THREADS,
+	                    Math.max(1L, (records + sliceRecords - 1L) / sliceRecords)
+	            );
+
+	            if (copyTasks <= 1) {
+	                reverseCopyRecordsSequential(source, sourceBase, target, targetBase, records);
+	                return;
+	            }
+
+	            long recordsPerTask = records / copyTasks;
+	            ArrayList<Future<?>> futures = new ArrayList<>(copyTasks);
+
+	            for (int t = 0; t < copyTasks; t++) {
+	                final int task = t;
+	                futures.add(Apex.POOL.submit(() ->
+	                        reverseCopySlice(source, sourceBase, target, targetBase, records, recordsPerTask, copyTasks, task)
+	                ));
+	            }
+
+	            waitForFutures(futures);
+	        }
+
+	        private static void reverseCopyRecordsSequential(
 	                MemorySegment source,
 	                long sourceBase,
 	                MemorySegment target,
@@ -598,12 +614,4 @@ public class tools {
 	            }
 	        }
 
-	 public static void configureLargePartitionPermits(Options options) {
-	        Apex.LARGE_PARTITION_PERMIT_COUNT = options.largePartitionPermits > 0
-	                ? options.largePartitionPermits
-	                : Math.max(1, Apex.THREADS / 8);
-	        Apex.LARGE_PARTITION_PERMITS = new Semaphore(Apex.LARGE_PARTITION_PERMIT_COUNT);
-	    }
-	 
-	   
 }

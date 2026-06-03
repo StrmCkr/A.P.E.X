@@ -46,6 +46,9 @@ public class verifier {
         AtomicLong globalHashV = new AtomicLong(0L);
         AtomicLong globalHashKV = new AtomicLong(0L);
         AtomicLong globalFailFlags = new AtomicLong(0L);
+        AtomicLong firstOrderFailIndex = new AtomicLong(Long.MAX_VALUE);
+        AtomicLong firstOrderFailPreviousKey = new AtomicLong(0L);
+        AtomicLong firstOrderFailKey = new AtomicLong(0L);
         
         // Primed to bitwise hardware boundaries for unsigned evaluations
         AtomicLong globalMinKey = new AtomicLong(-1L); // Unsigned Max (all bits 1)
@@ -95,6 +98,7 @@ public class verifier {
                     // 1. ORDER CHECK
                     if (i > startRecord && Long.compareUnsigned(prev, k) > 0) {
                         localFailFlags |= 1L;
+                        recordFirstOrderFailure(firstOrderFailIndex, firstOrderFailPreviousKey, firstOrderFailKey, i, prev, k);
                     }
 
                     // 2. PAIR CHECK
@@ -162,6 +166,14 @@ public class verifier {
                 // If the last key of the previous block is larger than the first key of the current block
                 if (Long.compareUnsigned(threadLastKeys[lastActiveTid], threadFirstKeys[t]) > 0) {
                     finalFailFlags |= 1L; // Flag order failure safely
+                    recordFirstOrderFailure(
+                            firstOrderFailIndex,
+                            firstOrderFailPreviousKey,
+                            firstOrderFailKey,
+                            firstThreadStartIndex(t, chunk),
+                            threadLastKeys[lastActiveTid],
+                            threadFirstKeys[t]
+                    );
                 }
             }
             lastActiveTid = t;
@@ -185,7 +197,16 @@ public class verifier {
         if (finalFailFlags != 0L) {
             StringBuilder sb = new StringBuilder();
             sb.append("VERIFICATION FAILED\n");
-            if ((finalFailFlags & 1L)  != 0L) sb.append(" - ORDER FAIL\n");
+            if ((finalFailFlags & 1L)  != 0L) {
+                sb.append(" - ORDER FAIL");
+                long orderFail = firstOrderFailIndex.get();
+                if (orderFail != Long.MAX_VALUE) {
+                    sb.append(" at index ").append(orderFail)
+                            .append(" prev=0x").append(String.format("%016X", firstOrderFailPreviousKey.get()))
+                            .append(" key=0x").append(String.format("%016X", firstOrderFailKey.get()));
+                }
+                sb.append('\n');
+            }
             if ((finalFailFlags & 2L)  != 0L) sb.append(" - PAIR FAIL\n");
             if ((finalFailFlags & 4L)  != 0L) sb.append(" - RANGE FAIL\n");
             if ((finalFailFlags & 8L)  != 0L) sb.append(" - XOR FAIL\n");
@@ -212,5 +233,27 @@ public class verifier {
             System.out.printf("  max key          : 0x%016X%n", maxKey);
             System.out.printf("Verification       %.3f sec | %.2f M rec/sec%n", seconds, mps);
         }
+    }
+
+    private static void recordFirstOrderFailure(
+            AtomicLong failIndex,
+            AtomicLong failPreviousKey,
+            AtomicLong failKey,
+            long index,
+            long previousKey,
+            long key
+    ) {
+        long current;
+        while (index < (current = failIndex.get())) {
+            if (failIndex.compareAndSet(current, index)) {
+                failPreviousKey.set(previousKey);
+                failKey.set(key);
+                return;
+            }
+        }
+    }
+
+    private static long firstThreadStartIndex(int threadId, long chunk) {
+        return (long) threadId * chunk;
     }
 }

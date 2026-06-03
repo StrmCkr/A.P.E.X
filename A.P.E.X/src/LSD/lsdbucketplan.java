@@ -23,26 +23,42 @@ public class lsdbucketplan {
 	        final long variableMask;
 	        final int remainingBits;
 	        final boolean tinySort;
+	        final boolean ascending;
+	        final boolean descending;
 
-	        PartitionWork(int bucket, long startPos, int size, long variableMask, int remainingBits, boolean tinySort) {
+	        PartitionWork(int bucket, long startPos, int size, long variableMask, int remainingBits,
+	                boolean tinySort, boolean ascending, boolean descending) {
 	            this.bucket = bucket;
 	            this.startPos = startPos;
 	            this.size = size;
 	            this.variableMask = variableMask;
 	            this.remainingBits = remainingBits;
 	            this.tinySort = tinySort;
+	            this.ascending = ascending;
+	            this.descending = descending;
 	        }
 
 	        static PartitionWork bucket(int bucket, MsdBucketPlan plan) {
-	            return new PartitionWork(bucket, plan.starts[bucket], plan.sizes[bucket], 0L, 0, false);
+	            return new PartitionWork(bucket, plan.starts[bucket], plan.sizes[bucket], 0L, 0, false,
+	                    plan.bucketAscending[bucket], plan.bucketDescending[bucket]);
 	        }
 
 	        static PartitionWork tiny(long startPos, int size) {
-	            return new PartitionWork(-1, startPos, size, 0L, 0, true);
+	            return new PartitionWork(-1, startPos, size, 0L, 0, true, false, false);
+	        }
+
+	        static PartitionWork tiny(long startPos, int size, boolean ascending, boolean descending) {
+	            return new PartitionWork(-1, startPos, size, 0L, 0, true, ascending, descending);
 	        }
 
 	        static PartitionWork partition(long startPos, int size, long variableMask, int remainingBits) {
-	            return new PartitionWork(-1, startPos, size, variableMask, remainingBits, false);
+	            return new PartitionWork(-1, startPos, size, variableMask, remainingBits, false, false, false);
+	        }
+
+	        static PartitionWork partition(long startPos, int size, long variableMask, int remainingBits,
+	                boolean ascending, boolean descending) {
+	            return new PartitionWork(-1, startPos, size, variableMask, remainingBits, false,
+	                    ascending, descending);
 	        }
 	    }
 
@@ -59,7 +75,7 @@ public class lsdbucketplan {
 
 	        int contiguousCycles = buildContiguousLsdCyclePlan(variableMask, cfg, remainingBits,
 	                cycleShifts, cycleMasks, cycleBitMasks, cycleTuplePlans);
-	        int packedCycles = packedTupleCycleCount(variableMask, cfg);
+	        int packedCycles = packedTupleCycleCount(variableMask, cfg);	        
 
 	        if (packedCycles < contiguousCycles || Apex.PACKED_TUPLE_CYCLES) {
 	            return tuples.buildPackedTupleLsdCyclePlan(variableMask, cfg,
@@ -119,6 +135,22 @@ public class lsdbucketplan {
 	  static int packedTupleCycleCount(long variableMask, Config cfg) {
 	        int variableBits = Long.bitCount(variableMask);
 	        return variableBits == 0 ? 0 : (variableBits + cfg.lsdBits - 1) / cfg.lsdBits;
+	    }
+	  	
+
+	  static void setTupleCycle(
+	            int cycle,
+	            long bitMask,
+	            int[] cycleShifts,
+	            int[] cycleMasks,
+	            long[] cycleBitMasks,
+	            long[] cycleTuplePlans
+	    ) {
+	        int shift = tuples.contiguousShift(bitMask);
+	        cycleShifts[cycle] = shift;
+	        cycleMasks[cycle] = tools.lowIntMask(Long.bitCount(bitMask));
+	        cycleBitMasks[cycle] = bitMask;
+	        cycleTuplePlans[cycle] = shift < 0 ? tuples.buildSmallTuplePlan(bitMask) : 0L;
 	    }
 	  public static void sortMsdBucketsWithLsdRadix(
 	            MemorySegment scratch,
@@ -182,39 +214,14 @@ public class lsdbucketplan {
 	            AtomicInteger nextBucket = new AtomicInteger();
 
 	            for (int t = 0; t < Apex.THREADS; t++) {
-	                final int threadId = t;
 	                futures.add(Apex.POOL.submit(() -> {
 	                    try {
 	                        Scratch sc = tls.get();
 
 	                        for (;;) {
-	                            int currentPointer = nextBucket.get();
-	                            if (currentPointer >= workBuckets.length) {
+	                            int chosenWorkIndex = nextBucket.getAndIncrement();
+	                            if (chosenWorkIndex >= workBuckets.length) {
 	                                break;
-	                            }
-
-	                            // Topology Domain Logic: Target localized work ranges inside your CCD first
-	                            int chosenWorkIndex = -1;
-	                            
-	                            for (int i = currentPointer; i < workBuckets.length; i++) {
-	                                // Map array ranges symmetrically to domain groups using our new Apex macro
-	                                if (main.Apex.isL3CacheLocal(threadId, i % Apex.THREADS)) {
-	                                    // Try to peek and claim a local cache bucket before someone else sweeps it
-	                                    if (nextBucket.compareAndSet(i, i + 1)) {
-	                                        chosenWorkIndex = i;
-	                                        break;
-	                                    }
-	                                }
-	                            }
-
-	                            // Global Fallback Path: If your local CCD die is out of tasks, 
-	                            // cross the physical interconnect bridge to clear out remaining global work.
-	                            if (chosenWorkIndex == -1) {
-	                                java.lang.Thread.onSpinWait(); // Throttle brief interconnect spikes
-	                                chosenWorkIndex = nextBucket.getAndIncrement();
-	                                if (chosenWorkIndex >= workBuckets.length) {
-	                                    break;
-	                                }
 	                            }
 
 	                            // Subsystem B Check: Adaptive task sizing applied directly to bucket volumes
@@ -271,6 +278,13 @@ public class lsdbucketplan {
 	        }
 
 	        long startPos = plan.starts[b];
+	        if (plan.bucketAscending[b]) {
+	            return;
+	        }
+	        if (plan.bucketDescending[b]) {
+	            tools.reverseRecordsInPlace(dst, startPos << 4, size);
+	            return;
+	        }
 
 	        if (size < cfg.tinyPartitionThreshold) {
 	            tinysort.tinyPartitionBitSort(dst, startPos, size, sc);
@@ -278,7 +292,7 @@ public class lsdbucketplan {
 	        }
 
 	        if (cycles == 0 && tuples.tryDirectTupleSpaceSort(
-	                scratch, dst, startPos, size, sc, tupleTailMask, tupleTailPlan
+	                scratch, dst, startPos, size, sc, tupleTailMask, tupleTailPlan, false
 	        )) {
 	            return;
 	        }
@@ -315,9 +329,7 @@ public class lsdbucketplan {
 	                    tupleTailPlan
 	            );
 	        }
-	    }
-
-	 
+	    }	 
 	  
 
 	    static void lsdRadixSortPartition(
@@ -349,30 +361,11 @@ public class lsdbucketplan {
 	        long[] nextValues = sc.v2;
 
 	        long p = base;
-	        boolean ascending = true;
-	        boolean descending = true;
-	        long previous = 0L;
 
 	        for (int i = 0; i < size; i++) {
-	            long key = dst.get(Apex.LONG, p);
-	            currentKeys[i] = key;
+	            currentKeys[i] = dst.get(Apex.LONG, p);
 	            currentValues[i] = dst.get(Apex.LONG, p + 8);
-	            if ((ascending || descending) && i > 0) {
-	                int cmp = Long.compareUnsigned(previous, key);
-	                ascending &= cmp <= 0;
-	                descending &= cmp >= 0;
-	            }
-	            previous = key;
 	            p += Apex.RECORD_BYTES;
-	        }
-
-	        if (ascending) {
-	            return;
-	        }
-
-	        if (descending) {
-	            tools.reverseRecordsInPlace(dst, base, size);
-	            return;
 	        }
 
 	        for (int cycle = 0; cycle < cycles; cycle++) {
@@ -559,12 +552,49 @@ public class lsdbucketplan {
 	        }
 	    }
 	    public static boolean bucketHasLsdWork(MsdBucketPlan plan, Config cfg, int b) {
+	        if (plan.sizes[b] <= 1) {
+	            return false;
+	        }
+
+	        if (plan.bucketFlags[b] == Apex.BUCKET_DESCENDING) {
+	            return true;
+	        }
+
 	        return plan.bucketFlags[b] == Apex.BUCKET_MIXED &&
-	                plan.sizes[b] > 1 &&
 	                plan.variableMasks[b] != 0L &&
 	                (plan.sizes[b] < cfg.tinyPartitionThreshold ||
 	                        plan.cycleCounts[b] > 0 ||
 	                        plan.tupleTailMasks[b] != 0L);
+	    }
+
+	    public static boolean localChildHasLsdWork(MsdBucketPlan plan, int bucket, int child) {
+	        int[] sizes = plan.localSizes[bucket];
+	        long[] variableMasks = plan.localVariableMasks[bucket];
+	        if (sizes == null || variableMasks == null ||
+	                sizes[child] <= 1 || variableMasks[child] == 0L) {
+	            return false;
+	        }
+
+	        return plan.localAscending[bucket] == null || !plan.localAscending[bucket][child];
+	    }
+
+	    public static boolean bucketHasScheduledLsdWork(MsdBucketPlan plan, Config cfg, int b) {
+	        if (!bucketHasLsdWork(plan, cfg, b)) {
+	            return false;
+	        }
+
+	        if (plan.localMsdShifts[b] < 0) {
+	            return true;
+	        }
+
+	        int childCount = plan.localSizes[b] == null ? 0 : plan.localSizes[b].length;
+	        for (int child = 0; child < childCount; child++) {
+	            if (localChildHasLsdWork(plan, b, child)) {
+	                return true;
+	            }
+	        }
+
+	        return false;
 	    }
 
 	    static PartitionWork[] buildLocalMsdWorkItems(
@@ -589,28 +619,35 @@ public class lsdbucketplan {
 	                int[] sizes = plan.localSizes[b];
 	                long[] variableMasks = plan.localVariableMasks[b];
 
-	                for (int child = 0; child < cfg.msdBucketCount; child++) {
+	                for (int child = 0; child < sizes.length; child++) {
+	                    if (!localChildHasLsdWork(plan, b, child)) {
+	                        continue;
+	                    }
+
 	                    int size = sizes[child];
 	                    long variableMask = variableMasks[child];
+	                    boolean ascending = plan.localAscending[b] != null && plan.localAscending[b][child];
+	                    boolean descending = plan.localDescending[b] != null && plan.localDescending[b][child];
 
-	                    if (size > 1 && variableMask != 0L) {
-	                        if (size < cfg.tinyPartitionThreshold) {
-	                            workItems.add(PartitionWork.tiny(starts[child], size));
-	                            continue;
-	                        }
-
-	                        workItems.add(PartitionWork.partition(
-	                                starts[child],
-	                                size,
-	                                variableMask,
-	                                localMsdShift
-	                        ));
+	                    if (size < cfg.tinyPartitionThreshold) {
+	                        workItems.add(PartitionWork.tiny(starts[child], size, ascending, descending));
+	                        continue;
 	                    }
+
+	                    workItems.add(PartitionWork.partition(
+	                            starts[child],
+	                            size,
+	                            variableMask,
+	                            localMsdShift,
+	                            ascending,
+	                            descending
+	                    ));
 	                }
 	                localMsdBuckets++;
 	            } else {
 	                if (plan.sizes[b] < cfg.tinyPartitionThreshold) {
-	                    workItems.add(PartitionWork.tiny(plan.starts[b], plan.sizes[b]));
+	                    workItems.add(PartitionWork.tiny(plan.starts[b], plan.sizes[b],
+	                            plan.bucketAscending[b], plan.bucketDescending[b]));
 	                } else {
 	                    workItems.add(PartitionWork.bucket(b, plan));
 	                }
@@ -633,13 +670,28 @@ public class lsdbucketplan {
 	            Scratch sc,
 	            PartitionWork work
 	    ) {
-	        if (work.tinySort) {
+	            if (work.tinySort) {
+	            if (work.ascending) {
+	                return;
+	            }
+	            if (work.descending) {
+	                tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
+	                return;
+	            }
 	            tinysort.tinyPartitionBitSort(dst, work.startPos, work.size, sc);
 	            return;
 	        }
 
 	        if (work.bucket >= 0) {
 	            sortOneMsdBucketWithLsdRadix(scratch, dst, plan, cfg, sc, work.bucket);
+	            return;
+	        }
+
+	        if (work.ascending) {
+	            return;
+	        }
+	        if (work.descending) {
+	            tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
 	            return;
 	        }
 
@@ -682,12 +734,21 @@ public class lsdbucketplan {
 	            return -1;
 	        }
 
+	        int localBits = localMsdBits(cfg);
 	        int highestVariableBit = 63 - Long.numberOfLeadingZeros(variableMask);
-	        int shift = Math.max(0, highestVariableBit - cfg.msdBits + 1);
-	        long windowMask = tools.lowBitsMask(cfg.msdBits) << shift;
+	        int shift = Math.max(0, highestVariableBit - localBits + 1);
+	        long windowMask = tools.lowBitsMask(localBits) << shift;
 	        int windowBits = Long.bitCount(variableMask & windowMask);
 
 	        return windowBits >= Apex.LOCAL_MSD_MIN_WINDOW_BITS ? shift : -1;
+	    }
+
+	    public static int localMsdBits(Config cfg) {
+	        return Apex.LOCAL_MSD_BITS > 0 ? Apex.LOCAL_MSD_BITS : cfg.msdBits;
+	    }
+
+	    public static int localMsdBucketCount(Config cfg) {
+	        return 1 << localMsdBits(cfg);
 	    }
 
 	    static void sortPartitionByVariableMask(
@@ -715,7 +776,7 @@ public class lsdbucketplan {
 
 	        if (tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
 	            tuples.tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc,
-	                    variableMask, tuples.buildSmallTuplePlan(variableMask));
+	                    variableMask, tuples.buildSmallTuplePlan(variableMask), false);
 	            return;
 	        }
 
