@@ -143,9 +143,22 @@ an algorithm cannot run for a selected size, the result row is shown as skipped.
 | `algos`, `algo` | Expanded algorithm selection when `curated=false` |
 | `tupleBits` | Direct tuple-space bit cap |
 | `tuplePacking` | Force packed sparse tuple cycles |
+| `staggerTuples`, `staggerTupleCycles` | Enable adaptive wider tuple-cycle planning |
+| `staggerTupleBits` | Max tuple-cycle width considered, capped at `16` |
+| `staggerTupleCostModel`, `staggerCostModel` | Score stagger widths; `false` uses fixed wider width when it saves a pass |
+| `staggerTupleMin`, `staggerTupleMinRecords` | Minimum partition size for staggered tuple planning |
+| `lsdHeapUnroll`, `heapUnroll` | `0` adaptive, `8` force heap unroll-8 path |
+| `lsdHeapUnrollMin`, `heapUnrollMin`, `lsdHeapUnrollMinRecords` | Minimum size for adaptive heap unroll |
 | `heapScratch`, `heapScratchRecords` | Heap scratch record limit |
 | `localMsdBits` | Override local MSD repartition width |
+| `localMsdMaxChildren`, `localMsdChildren`, `maxLocalMsdChildren` | Cap total local-MSD child buckets; `0` disables the cap |
+| `dominantCore`, `dominantCoreFastPath` | Enable duplicate-heavy/outlier dominant-core fast path |
+| `dominantCoreSample`, `dominantCoreSampleRecords` | Records sampled while finding dominant-key candidates |
+| `dominantCoreCandidates` | Candidate slots used by dominant-core detection |
+| `dominantCoreMinShare`, `dominantCoreMinSharePercent` | Minimum combined dominant-core share, as a percent |
+| `dominantKeyMinShareDivisor`, `dominantKeyShareDivisor` | Minimum per-key share divisor for dominant candidates |
 | `largePermits`, `largePartitionPermits` | Concurrent large partition permits |
+| `orderFastPath`, `inputOrderFastPath`, `prescan` | Enable the input order pre-scan fast path |
 | `workStealing`, `lsdWorkStealing` | Enable or disable LSD work stealing |
 | `workBatch`, `stealBatch`, `workStealBatch` | Work claim batch size |
 
@@ -233,7 +246,7 @@ For publication, report:
 - CPU model, core count, memory speed if known, operating system, and JDK
 - JVM flags, heap size, and direct memory size
 - selected `config=MSD,LSD,TINY`
-- `threads`, `tupleBits`, `tuplePacking`, and `workStealing`
+- `threads`, `tupleBits`, `tuplePacking`, `localMsdMaxChildren`, `dominantCore`, and `workStealing`
 - mode list, record counts, warmups, and measured runs
 - whether the table is curated or expanded
 

@@ -14,6 +14,8 @@ refinement, global/bucket reverse paths, and final sorted placement.
 
 ## Documentation
 
+- [Data and Descriptors](data-descriptors.md): record layout, data topologies,
+  descriptor formulas, and why descriptors drive dispatch
 - [Usage Guide](usage.md): build commands, runtime options, and common runs
 - [Comparison Guide](comparison.md): benchmark harness, baselines, and reporting
 - [Operation Model](operation-execution.md): execution flow, dispatch rules, and
@@ -145,17 +147,25 @@ current project link is:
 
 [https://strmckr.github.io/A.P.E.X/](https://strmckr.github.io/A.P.E.X/)
 
-Visualizer controls include:
+Visualizer controls:
 
-- `N` record count, up to `1,000,000`
-- data type / topology
-- MSD bits
-- LSD bits
-- thread count
-- tiny threshold
-- tuple bit cap
-- tuple on/off
-- play, step, reset
+| Control | Values |
+| --- | --- |
+| `N` | Record count from `0` to `1,000,000`, default `2,048` |
+| `Data type` | Visualizer data topology; labels display `ENTROPY` as `EXTREMAL` |
+| `MSD` | MSD bit width, `2..13`, default `8` |
+| `LSD` | LSD bit width, `2..17`, default `8` |
+| `Threads` | `1`, `2`, `4`, `8`, `16`, `32`, or `64`, default `16` |
+| `Tiny` | `32`, `64`, `128`, `512`, or `1024`, default `128` |
+| `Tuple bits` | Direct tuple cap, `2..16`, default `9` |
+| `Tuples` | Enables tuple direct/tail planning; when off, the tuple lane and tuple key items are hidden |
+| `Play/Pause` | Runs or pauses the current execution plan |
+| `Step` | Advances one execution step |
+| `Reset` | Rebuilds the visual plan from the current controls |
+
+Changing a control rebuilds the visual plan. The lane order is source array,
+MSD bucket plan and scatter, tiny partition lane, tuple direct/tail lane, LSD
+refinement lane, reverse lane, and sorted output array.
 
 The visualizer is educational, but its routes are aligned with the Java planner:
 global reverse, bucket reverse, tiny subroutes, tuple direct/tail, LSD cycles,
@@ -287,9 +297,14 @@ config=MSD_BITS,LSD_BITS,TINY_THRESHOLD
 ```bash
 threads=auto
 threads=16
+orderFastPath=true
 workStealing=true
 workBatch=8
 ```
+
+`orderFastPath=true` enables an input-order pre-scan before MSD planning so
+already ascending input can return immediately and fully descending input can
+take the global reverse path.
 
 Work stealing dynamically redistributes bucket refinement when buckets are
 imbalanced.
@@ -299,22 +314,54 @@ imbalanced.
 ```bash
 tupleBits=9
 tuplePacking=true
+staggerTuples=true
+staggerTupleBits=16
+staggerTupleCostModel=true
+staggerTupleMinRecords=0
 ```
 
 `tupleBits` caps direct tuple-space width. The current maximum cap is `16`.
 `tuplePacking=true` forces packed sparse tuple cycles; automatic packed cycles
-can still be selected when they reduce cycle count.
+can still be selected when they reduce cycle count. `staggerTuples=true` lets
+LSD refinement consider wider packed tuple cycles up to `staggerTupleBits`.
+When `staggerTupleCostModel=true`, A.P.E.X. scores candidate widths; when it is
+`false`, the configured wider width is used whenever it reduces pass count.
+`staggerTupleMinRecords` can restrict staggered tuple planning to larger
+partitions.
 
 ### Memory
 
 ```bash
 heapScratch=1048576
 largePermits=4
+lsdHeapUnroll=0
+lsdHeapUnrollMinRecords=4096
 ```
 
 `heapScratch` controls when worker scratch spills toward the off-heap path.
 `largePermits` limits concurrent large off-heap partitions. If omitted, A.P.E.X.
-chooses an automatic permit count from the thread count.
+chooses an automatic permit count from the thread count. `lsdHeapUnroll=0`
+uses the 8-record heap unroll path adaptively for partitions at or above
+`lsdHeapUnrollMinRecords`; `lsdHeapUnroll=8` forces that path.
+
+### Adaptive Refinement
+
+```bash
+localMsdBits=0
+localMsdMaxChildren=8192
+dominantCore=true
+dominantCoreSample=262144
+dominantCoreCandidates=64
+dominantCoreMinShare=80
+dominantKeyMinShareDivisor=1024
+```
+
+`localMsdBits=0` lets the selected LSD width choose the local-MSD child width.
+`localMsdMaxChildren` caps total local child planning across the top-level MSD
+plan; set it to `0` to remove the cap. `dominantCore=true` enables the
+duplicate-heavy/outlier fast path, which samples candidate dominant keys,
+confirms them with an exact count, places the sorted dominant core, and then
+refines only the remaining tail when the key order makes that safe.
 
 ### Benchmark Sweep
 
@@ -337,13 +384,26 @@ configuration.
 | `lsd` | LSD auto-tune bit range |
 | `tiny` | Tiny threshold auto-tune range |
 | `threads` | Worker threads, or `auto` |
+| `orderFastPath`, `inputOrderFastPath`, `prescan` | Enable the input order pre-scan fast path |
 | `workStealing` | Enable/disable LSD work stealing |
 | `workBatch` | Work-steal batch size |
 | `tupleBits` | Direct tuple bit cap |
 | `tuplePacking` | Force packed tuple cycles |
+| `staggerTuples`, `staggerTupleCycles` | Enable adaptive wider tuple-cycle planning |
+| `staggerTupleBits` | Max tuple-cycle width considered, capped at `16` |
+| `staggerTupleCostModel`, `staggerCostModel` | Score stagger widths; `false` uses fixed wider width when it saves a pass |
+| `staggerTupleMin`, `staggerTupleMinRecords` | Minimum partition size for staggered tuple planning |
+| `lsdHeapUnroll`, `heapUnroll` | `0` adaptive, `8` force heap unroll-8 path |
+| `lsdHeapUnrollMin`, `heapUnrollMin`, `lsdHeapUnrollMinRecords` | Minimum size for adaptive heap unroll |
 | `heapScratch` | Max heap scratch records per worker |
 | `largePermits` | Concurrent large partition permits |
 | `localMsdBits` | Override local MSD repartition width |
+| `localMsdMaxChildren` | Cap total local-MSD child buckets; `0` disables the cap |
+| `dominantCore` | Enable duplicate-heavy/outlier dominant-core fast path |
+| `dominantCoreSample`, `dominantCoreSampleRecords` | Records sampled while finding dominant-key candidates |
+| `dominantCoreCandidates` | Candidate slots used by dominant-core detection |
+| `dominantCoreMinShare` | Minimum combined dominant-core share, as a percent |
+| `dominantKeyMinShareDivisor` | Minimum per-key share divisor for dominant candidates |
 | `tuneRecords` | Record count for auto-tuning |
 | `warmupRecords` | Warmup record count for selected config |
 | `sweep` | Run all data modes |
@@ -383,6 +443,7 @@ src/tinysorts/     Tiny partition sort functions
 src/generator/     Data modes and topology generation
 src/Tools/         Utilities and verification
 src/Comparison/    Optional benchmark comparison harness
+data-descriptors.md  Data layout, topology families, and descriptor guide
 usage.md           Command-line usage guide
 comparison.md      Benchmark comparison guide
 operation-execution.md  Operation model and math-paper reference
@@ -401,3 +462,13 @@ JDK version, JVM flags, and dataset topology.
 ## License
 
 GNU General Public License v3.0. See [LICENSE](LICENSE).
+
+## Commercial Licensing
+
+A.P.E.X. is published as research software under GPLv3. Commercial licensing is
+available by arrangement for organizations that want proprietary integration,
+closed-source redistribution, private evaluation, custom support, or other
+non-GPL terms.
+
+If your use case requires a separate commercial license, contact the author to
+discuss licensing, consulting, or research collaboration.

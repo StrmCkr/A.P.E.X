@@ -16,6 +16,9 @@ masks, deterministic dispatch, MSD/LSD refinement, tuple projection, parallel
 descriptor reduction, and global correctness. This document keeps those ideas
 tied to the repository implementation.
 
+For a focused explanation of record layout, data topology families, and the
+descriptor vocabulary, see [Data and Descriptors](data-descriptors.md).
+
 ## Data Model
 
 A.P.E.X. sorts fixed-width records:
@@ -178,6 +181,20 @@ tiny route, tuple route, and LSD route.
 This keeps one oversized bucket from forcing a single long refinement path when
 its descriptor shows useful internal structure.
 
+The local-MSD width may be derived from the active config or overridden with
+`localMsdBits`. `localMsdMaxChildren` caps the total child buckets planned from
+top-level MSD buckets so adversarial tiny-child explosions do not dominate the
+plan phase.
+
+## Dominant-Core Outlier Path
+
+Duplicate-heavy buckets with sparse outliers can take a dominant-core path
+before normal LSD refinement. A.P.E.X. samples possible dominant keys, verifies
+candidate counts exactly, emits the sorted dominant core when it is a safe
+prefix, and then refines the outlier tail. The path is controlled by
+`dominantCore`, `dominantCoreSample`, `dominantCoreCandidates`,
+`dominantCoreMinShare`, and `dominantKeyMinShareDivisor`.
+
 ## Parallel Work Model
 
 A.P.E.X. parallelizes work in stages:
@@ -228,7 +245,7 @@ rules. The relevant named results include:
 
 ## Runtime Controls
 
-The main controls are intentionally limited:
+The command-line controls are intentionally limited:
 
 | Control | Runtime option |
 | --- | --- |
@@ -238,8 +255,44 @@ The main controls are intentionally limited:
 | LSD width | `lsd`, `config=MSD,LSD,TINY` |
 | Thread count | `threads` |
 | Tiny threshold | `tiny`, `config=MSD,LSD,TINY` |
+| Input order pre-scan | `orderFastPath`, `inputOrderFastPath`, `prescan` |
 | Tuple cap | `tupleBits` |
 | Tuple packing | `tuplePacking` |
+| Staggered tuple cycles | `staggerTuples`, `staggerTupleCycles` |
+| Staggered tuple width | `staggerTupleBits` |
+| Staggered tuple scoring | `staggerTupleCostModel`, `staggerCostModel` |
+| Staggered tuple minimum size | `staggerTupleMinRecords` |
+| LSD heap unroll | `lsdHeapUnroll`, `lsdHeapUnrollMinRecords` |
+| Heap scratch | `heapScratch`, `heapScratchRecords`, `maxHeapScratch` |
+| Large partition permits | `largePermits`, `largePartitionPermits`, `largePartitions` |
+| Local MSD repartition width | `localMsdBits`, `secondaryMsdBits`, `subMsdBits` |
+| Local MSD child cap | `localMsdMaxChildren`, `localMsdChildren`, `maxLocalMsdChildren` |
+| Dominant-core fast path | `dominantCore`, `dominantCoreFastPath` |
+| Dominant-core sample size | `dominantCoreSample`, `dominantCoreSampleRecords` |
+| Dominant-core candidate slots | `dominantCoreCandidates` |
+| Dominant-core minimum share | `dominantCoreMinShare`, `dominantCoreMinSharePercent` |
+| Dominant-key minimum share divisor | `dominantKeyMinShareDivisor`, `dominantKeyShareDivisor` |
 | Work stealing | `workStealing` |
+| Work claim batch size | `workBatch`, `stealBatch`, `workStealBatch` |
+| Auto-tune subset size | `tuneRecords`, `tune` |
+| Warmup size | `warmupRecords`, `warmup` |
+| Sweep mode | `sweep`, `sweepRecords`, `sweepN` |
 
-Those same concepts are mirrored by the browser visualizer controls.
+The browser visualizer mirrors the core execution controls:
+
+| Visualizer control | Values |
+| --- | --- |
+| `N` | Record count from `0` to `1,000,000`, default `2,048` |
+| `Data type` | Visualizer data topology; display names use `EXTREMAL` |
+| `MSD` | MSD bit width, `2..13`, default `8` |
+| `LSD` | LSD bit width, `2..17`, default `8` |
+| `Threads` | `1`, `2`, `4`, `8`, `16`, `32`, or `64`, default `16` |
+| `Tiny` | `32`, `64`, `128`, `512`, or `1024`, default `128` |
+| `Tuple bits` | Direct tuple cap, `2..16`, default `9` |
+| `Tuples` | Enables tuple direct/tail planning and shows the tuple lane |
+| `Play/Pause` | Runs or pauses the current execution plan |
+| `Step` | Advances one execution step |
+| `Reset` | Rebuilds the plan from the current controls |
+
+Changing a visualizer control resets and rebuilds the visual plan. The display
+order is source, MSD, tiny, tuples, LSD, reverse, then sorted output.
