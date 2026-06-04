@@ -2,7 +2,9 @@ package Tuples;
 
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.concurrent.Future;
 
 import Tools.tools;
 import config.configurations.Config;
@@ -98,7 +100,11 @@ public class tuples {
             return false;
         }
 
-        directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, smallTuplePlan, checkOrder);
+        if (!checkOrder && size > Apex.MAX_HEAP_SCRATCH_RECORDS && scratch != dst) {
+            directTupleSpaceSortOffHeap(scratch, dst, startPos, size, sc, entropyMask, smallTuplePlan);
+        } else {
+            directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, smallTuplePlan, checkOrder);
+        }
 
         return true;
     }
@@ -218,11 +224,23 @@ public class tuples {
 
         try {
             int radix = tupleRadix(entropyMask);
-            sc.ensureCounts(radix);
-            int[] counts = sc.counts;
             long dstBase = startPos << 4;
 
-            tupleCountingPassSegments(dst, dstBase, scratch, dstBase, size, counts, entropyMask, smallTuplePlan);
+            try {
+                parallelTupleCountingPassSegments(
+                        dst,
+                        dstBase,
+                        scratch,
+                        dstBase,
+                        size,
+                        -1,
+                        radix - 1,
+                        entropyMask,
+                        smallTuplePlan
+                );
+            } catch (Exception e) {
+                throw new RuntimeException("Parallel direct tuple off-heap pass failed", e);
+            }
 
             try {
                 tools.parallelBulkCopy(scratch, dstBase, dst, dstBase, size);
@@ -242,9 +260,28 @@ public class tuples {
             long[] cycleBitMasks,
             long[] cycleTuplePlans
     ) {
+        return buildPackedTupleCyclePlan(
+                variableMask,
+                cfg.lsdBits,
+                cycleShifts,
+                cycleMasks,
+                cycleBitMasks,
+                cycleTuplePlans
+        );
+    }
+
+    public static int buildPackedTupleCyclePlan(
+            long variableMask,
+            int bitsPerCycle,
+            int[] cycleShifts,
+            int[] cycleMasks,
+            long[] cycleBitMasks,
+            long[] cycleTuplePlans
+    ) {
         int cycles = 0;
         int bitsInCycle = 0;
         long bitMask = 0L;
+        int cycleBits = Math.max(1, Math.min(Apex.MAX_DIRECT_TUPLE_BITS, bitsPerCycle));
 
         while (variableMask != 0L) {
             long bit = variableMask & -variableMask;
@@ -252,7 +289,7 @@ public class tuples {
             bitMask |= bit;
             bitsInCycle++;
 
-            if (bitsInCycle == cfg.lsdBits || variableMask == 0L) {
+            if (bitsInCycle == cycleBits || variableMask == 0L) {
                 cycleBitMasks[cycles] = bitMask;
                 cycleMasks[cycles] = tools.lowIntMask(bitsInCycle);
                 cycleShifts[cycles] = contiguousShift(bitMask);
@@ -504,5 +541,191 @@ public class tuples {
                 p += Apex.RECORD_BYTES;
             }
         }
+    }
+
+    public static void parallelTupleCountingPassSegments(
+            MemorySegment source,
+            long sourceBase,
+            MemorySegment target,
+            long targetBase,
+            int size,
+            int shift,
+            int mask,
+            long bitMask,
+            long smallTuplePlan
+    ) throws Exception {
+        int radixThisPass = mask + 1;
+        int[][] threadOffsets = new int[Apex.THREADS][radixThisPass];
+        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
+        int chunk = size / Apex.THREADS;
+
+        for (int t = 0; t < Apex.THREADS; t++) {
+            final int tid = t;
+            futures.add(Apex.POOL.submit(() -> {
+                int[] counts = threadOffsets[tid];
+                int start = tid * chunk;
+                int end = (tid == Apex.THREADS - 1) ? size : start + chunk;
+                long p = sourceBase + ((long) start << 4);
+                long limit = sourceBase + ((long) end << 4);
+                long unrolledLimit = limit - (4L * Apex.RECORD_BYTES);
+
+                if (shift >= 0) {
+                    while (p <= unrolledLimit) {
+                        long k0 = source.get(Apex.LONG, p);
+                        long k1 = source.get(Apex.LONG, p + 16);
+                        long k2 = source.get(Apex.LONG, p + 32);
+                        long k3 = source.get(Apex.LONG, p + 48);
+
+                        counts[(int) ((k0 >>> shift) & mask)]++;
+                        counts[(int) ((k1 >>> shift) & mask)]++;
+                        counts[(int) ((k2 >>> shift) & mask)]++;
+                        counts[(int) ((k3 >>> shift) & mask)]++;
+                        p += 4L * Apex.RECORD_BYTES;
+                    }
+
+                    while (p < limit) {
+                        long k = source.get(Apex.LONG, p);
+                        counts[(int) ((k >>> shift) & mask)]++;
+                        p += Apex.RECORD_BYTES;
+                    }
+                } else {
+                    while (p <= unrolledLimit) {
+                        long k0 = source.get(Apex.LONG, p);
+                        long k1 = source.get(Apex.LONG, p + 16);
+                        long k2 = source.get(Apex.LONG, p + 32);
+                        long k3 = source.get(Apex.LONG, p + 48);
+
+                        counts[(int) Long.compress(k0, bitMask)]++;
+                        counts[(int) Long.compress(k1, bitMask)]++;
+                        counts[(int) Long.compress(k2, bitMask)]++;
+                        counts[(int) Long.compress(k3, bitMask)]++;
+                        p += 4L * Apex.RECORD_BYTES;
+                    }
+
+                    while (p < limit) {
+                        long k = source.get(Apex.LONG, p);
+                        counts[(int) Long.compress(k, bitMask)]++;
+                        p += Apex.RECORD_BYTES;
+                    }
+                }
+            }));
+        }
+
+        tools.waitForFutures(futures);
+
+        int sum = 0;
+        for (int bin = 0; bin < radixThisPass; bin++) {
+            int offset = sum;
+
+            for (int t = 0; t < Apex.THREADS; t++) {
+                int count = threadOffsets[t][bin];
+                threadOffsets[t][bin] = offset;
+                offset += count;
+            }
+
+            sum = offset;
+        }
+
+        futures.clear();
+
+        for (int t = 0; t < Apex.THREADS; t++) {
+            final int tid = t;
+            futures.add(Apex.POOL.submit(() -> {
+                int[] offsets = threadOffsets[tid];
+                int start = tid * chunk;
+                int end = (tid == Apex.THREADS - 1) ? size : start + chunk;
+                long p = sourceBase + ((long) start << 4);
+                long limit = sourceBase + ((long) end << 4);
+                long unrolledLimit = limit - (4L * Apex.RECORD_BYTES);
+
+                if (shift >= 0) {
+                    while (p <= unrolledLimit) {
+                        long k0 = source.get(Apex.LONG, p);
+                        long v0 = source.get(Apex.LONG, p + 8);
+                        long k1 = source.get(Apex.LONG, p + 16);
+                        long v1 = source.get(Apex.LONG, p + 24);
+                        long k2 = source.get(Apex.LONG, p + 32);
+                        long v2 = source.get(Apex.LONG, p + 40);
+                        long k3 = source.get(Apex.LONG, p + 48);
+                        long v3 = source.get(Apex.LONG, p + 56);
+
+                        int bin0 = (int) ((k0 >>> shift) & mask);
+                        long targetPos0 = targetBase + ((long) offsets[bin0]++ << 4);
+                        target.set(Apex.LONG, targetPos0, k0);
+                        target.set(Apex.LONG, targetPos0 + 8, v0);
+
+                        int bin1 = (int) ((k1 >>> shift) & mask);
+                        long targetPos1 = targetBase + ((long) offsets[bin1]++ << 4);
+                        target.set(Apex.LONG, targetPos1, k1);
+                        target.set(Apex.LONG, targetPos1 + 8, v1);
+
+                        int bin2 = (int) ((k2 >>> shift) & mask);
+                        long targetPos2 = targetBase + ((long) offsets[bin2]++ << 4);
+                        target.set(Apex.LONG, targetPos2, k2);
+                        target.set(Apex.LONG, targetPos2 + 8, v2);
+
+                        int bin3 = (int) ((k3 >>> shift) & mask);
+                        long targetPos3 = targetBase + ((long) offsets[bin3]++ << 4);
+                        target.set(Apex.LONG, targetPos3, k3);
+                        target.set(Apex.LONG, targetPos3 + 8, v3);
+                        p += 4L * Apex.RECORD_BYTES;
+                    }
+
+                    while (p < limit) {
+                        long k = source.get(Apex.LONG, p);
+                        long v = source.get(Apex.LONG, p + 8);
+                        int bin = (int) ((k >>> shift) & mask);
+                        long targetPos = targetBase + ((long) offsets[bin]++ << 4);
+                        target.set(Apex.LONG, targetPos, k);
+                        target.set(Apex.LONG, targetPos + 8, v);
+                        p += Apex.RECORD_BYTES;
+                    }
+                } else {
+                    while (p <= unrolledLimit) {
+                        long k0 = source.get(Apex.LONG, p);
+                        long v0 = source.get(Apex.LONG, p + 8);
+                        long k1 = source.get(Apex.LONG, p + 16);
+                        long v1 = source.get(Apex.LONG, p + 24);
+                        long k2 = source.get(Apex.LONG, p + 32);
+                        long v2 = source.get(Apex.LONG, p + 40);
+                        long k3 = source.get(Apex.LONG, p + 48);
+                        long v3 = source.get(Apex.LONG, p + 56);
+
+                        int bin0 = (int) Long.compress(k0, bitMask);
+                        long targetPos0 = targetBase + ((long) offsets[bin0]++ << 4);
+                        target.set(Apex.LONG, targetPos0, k0);
+                        target.set(Apex.LONG, targetPos0 + 8, v0);
+
+                        int bin1 = (int) Long.compress(k1, bitMask);
+                        long targetPos1 = targetBase + ((long) offsets[bin1]++ << 4);
+                        target.set(Apex.LONG, targetPos1, k1);
+                        target.set(Apex.LONG, targetPos1 + 8, v1);
+
+                        int bin2 = (int) Long.compress(k2, bitMask);
+                        long targetPos2 = targetBase + ((long) offsets[bin2]++ << 4);
+                        target.set(Apex.LONG, targetPos2, k2);
+                        target.set(Apex.LONG, targetPos2 + 8, v2);
+
+                        int bin3 = (int) Long.compress(k3, bitMask);
+                        long targetPos3 = targetBase + ((long) offsets[bin3]++ << 4);
+                        target.set(Apex.LONG, targetPos3, k3);
+                        target.set(Apex.LONG, targetPos3 + 8, v3);
+                        p += 4L * Apex.RECORD_BYTES;
+                    }
+
+                    while (p < limit) {
+                        long k = source.get(Apex.LONG, p);
+                        long v = source.get(Apex.LONG, p + 8);
+                        int bin = (int) Long.compress(k, bitMask);
+                        long targetPos = targetBase + ((long) offsets[bin]++ << 4);
+                        target.set(Apex.LONG, targetPos, k);
+                        target.set(Apex.LONG, targetPos + 8, v);
+                        p += Apex.RECORD_BYTES;
+                    }
+                }
+            }));
+        }
+
+        tools.waitForFutures(futures);
     }
 }

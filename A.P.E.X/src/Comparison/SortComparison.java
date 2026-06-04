@@ -101,11 +101,24 @@ public final class SortComparison {
         int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
         int workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, threads / 2));
         int tupleBits = Integer.getInteger("apex.tupleBits", 9);
+        int lsdHeapUnroll = Integer.getInteger("apex.lsdHeapUnroll", 0);
+        int lsdHeapUnrollMinRecords = Integer.getInteger("apex.lsdHeapUnrollMinRecords", 4_096);
         int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
         int localMsdBits = Integer.getInteger("apex.localMsdBits", 0);
+        int localMsdMaxChildren = Integer.getInteger("apex.localMsdMaxChildren", Apex.LOCAL_MSD_MAX_CHILDREN);
+        boolean dominantCoreFastPath = Boolean.parseBoolean(System.getProperty("apex.dominantCore", Boolean.toString(Apex.DOMINANT_CORE_FAST_PATH)));
+        int dominantCoreSampleRecords = Integer.getInteger("apex.dominantCoreSampleRecords", Apex.DOMINANT_CORE_SAMPLE_RECORDS);
+        int dominantCoreCandidates = Integer.getInteger("apex.dominantCoreCandidates", Apex.DOMINANT_CORE_CANDIDATES);
+        int dominantCoreMinSharePercent = Integer.getInteger("apex.dominantCoreMinShare", Apex.DOMINANT_CORE_MIN_SHARE_PERCENT);
+        int dominantKeyMinShareDivisor = Integer.getInteger("apex.dominantKeyMinShareDivisor", Apex.DOMINANT_KEY_MIN_SHARE_DIVISOR);
         int largePermits = 0;
+        boolean orderFastPath = Boolean.parseBoolean(System.getProperty("apex.orderFastPath", "false"));
         boolean lsdWorkStealing = true;
         boolean tuplePacking = Boolean.getBoolean("apex.tuplePacking");
+        boolean staggerTupleCycles = Boolean.parseBoolean(System.getProperty("apex.staggerTuples", "true"));
+        boolean staggerTupleCostModel = Boolean.parseBoolean(System.getProperty("apex.staggerTupleCostModel", "true"));
+        int staggerTupleBits = Integer.getInteger("apex.staggerTupleBits", 16);
+        int staggerTupleMinRecords = Integer.getInteger("apex.staggerTupleMinRecords", 0);
         boolean curated = true;
         Config config = configurations.defaultConfig();
         String algos = "records";
@@ -1164,14 +1177,27 @@ public final class SortComparison {
     static void configureApex(Args args) {
         runoptions.applyApexSettings(
                 args.threads,
+                args.orderFastPath,
                 args.lsdWorkStealing,
                 args.workStealBatch,
                 args.tuplePacking,
                 args.tupleBits,
+                args.staggerTupleCycles,
+                args.staggerTupleCostModel,
+                args.staggerTupleBits,
+                args.staggerTupleMinRecords,
+                args.lsdHeapUnroll,
+                args.lsdHeapUnrollMinRecords,
                 args.heapScratchRecords,
                 args.localMsdBits,
                 args.largePermits
         );
+        Apex.LOCAL_MSD_MAX_CHILDREN = args.localMsdMaxChildren;
+        Apex.DOMINANT_CORE_FAST_PATH = args.dominantCoreFastPath;
+        Apex.DOMINANT_CORE_SAMPLE_RECORDS = args.dominantCoreSampleRecords;
+        Apex.DOMINANT_CORE_CANDIDATES = args.dominantCoreCandidates;
+        Apex.DOMINANT_CORE_MIN_SHARE_PERCENT = args.dominantCoreMinSharePercent;
+        Apex.DOMINANT_KEY_MIN_SHARE_DIVISOR = args.dominantKeyMinShareDivisor;
         Apex.POOL = Executors.newFixedThreadPool(Apex.THREADS);
     }
 
@@ -1226,6 +1252,30 @@ public final class SortComparison {
                 case "tuplebits":
                     args.tupleBits = runoptions.parseNonNegativeInt(value);
                     break;
+                case "staggertuples":
+                case "staggertuplecycles":
+                    args.staggerTupleCycles = runoptions.parseBoolean(value);
+                    break;
+                case "staggertuplecostmodel":
+                case "staggercostmodel":
+                    args.staggerTupleCostModel = runoptions.parseBoolean(value);
+                    break;
+                case "staggertuplebits":
+                    args.staggerTupleBits = runoptions.parsePositiveInt(value);
+                    break;
+                case "staggertuplemin":
+                case "staggertupleminrecords":
+                    args.staggerTupleMinRecords = runoptions.parseNonNegativeInt(value);
+                    break;
+                case "lsdheapunroll":
+                case "heapunroll":
+                    args.lsdHeapUnroll = runoptions.parseNonNegativeInt(value);
+                    break;
+                case "lsdheapunrollmin":
+                case "heapunrollmin":
+                case "lsdheapunrollminrecords":
+                    args.lsdHeapUnrollMinRecords = runoptions.parsePositiveInt(value);
+                    break;
                 case "heapscratch":
                 case "heapscratchrecords":
                     args.heapScratchRecords = runoptions.parsePositiveInt(value);
@@ -1235,10 +1285,39 @@ public final class SortComparison {
                 case "submsdbits":
                     args.localMsdBits = runoptions.parseNonNegativeInt(value);
                     break;
+                case "localmsdmaxchildren":
+                case "localmsdchildren":
+                case "maxlocalmsdchildren":
+                    args.localMsdMaxChildren = runoptions.parseNonNegativeInt(value);
+                    break;
+                case "dominantcore":
+                case "dominantcorefastpath":
+                    args.dominantCoreFastPath = runoptions.parseBoolean(value);
+                    break;
+                case "dominantcoresamplerecords":
+                case "dominantcoresample":
+                    args.dominantCoreSampleRecords = runoptions.parseIntCount(value, "dominantCoreSampleRecords");
+                    break;
+                case "dominantcorecandidates":
+                    args.dominantCoreCandidates = runoptions.parsePositiveInt(value);
+                    break;
+                case "dominantcoreminshare":
+                case "dominantcoreminsharepercent":
+                    args.dominantCoreMinSharePercent = runoptions.parsePositiveInt(value);
+                    break;
+                case "dominantkeyminsharedivisor":
+                case "dominantkeysharedivisor":
+                    args.dominantKeyMinShareDivisor = runoptions.parsePositiveInt(value);
+                    break;
                 case "largepermits":
                 case "largepartitionpermits":
                     args.largePermits = runoptions.parsePositiveInt(value);
                     break;                 
+                case "orderfastpath":
+                case "inputorderfastpath":
+                case "prescan":
+                    args.orderFastPath = runoptions.parseBoolean(value);
+                    break;
                 case "workbatch":
                 case "stealbatch":
                 case "workstealbatch":
@@ -1271,8 +1350,29 @@ public final class SortComparison {
         if (args.tupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
             throw new IllegalArgumentException("tupleBits must be <= " + Apex.MAX_DIRECT_TUPLE_BITS);
         }
+        if (args.staggerTupleBits <= 0 || args.staggerTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
+            throw new IllegalArgumentException("staggerTupleBits must be in 1.." + Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+        if (args.staggerTupleMinRecords < 0) {
+            throw new IllegalArgumentException("staggerTupleMinRecords must be non-negative");
+        }
         if (args.localMsdBits > 0) {
             runoptions.validateBitRange("Local MSD", args.localMsdBits, args.localMsdBits);
+        }
+        if (args.localMsdMaxChildren < 0) {
+            throw new IllegalArgumentException("localMsdMaxChildren must be non-negative");
+        }
+        if (args.dominantCoreSampleRecords <= 0) {
+            throw new IllegalArgumentException("dominantCoreSampleRecords must be positive");
+        }
+        if (args.dominantCoreCandidates <= 0) {
+            throw new IllegalArgumentException("dominantCoreCandidates must be positive");
+        }
+        if (args.dominantCoreMinSharePercent <= 0 || args.dominantCoreMinSharePercent > 100) {
+            throw new IllegalArgumentException("dominantCoreMinShare must be in 1..100");
+        }
+        if (args.dominantKeyMinShareDivisor <= 0) {
+            throw new IllegalArgumentException("dominantKeyMinShareDivisor must be positive");
         }
         runoptions.validateConfig(args.config);
         return args;

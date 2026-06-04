@@ -66,6 +66,7 @@ public class lsdbucketplan {
 	            long variableMask,
 	            Config cfg,
 	            int remainingBits,
+	            int size,
 	            int[] cycleShifts,
 	            int[] cycleMasks,
 	            long[] cycleBitMasks,
@@ -75,10 +76,45 @@ public class lsdbucketplan {
 
 	        int contiguousCycles = buildContiguousLsdCyclePlan(variableMask, cfg, remainingBits,
 	                cycleShifts, cycleMasks, cycleBitMasks, cycleTuplePlans);
-	        int packedCycles = packedTupleCycleCount(variableMask, cfg);	        
+	        long bestScore = scoreExistingCyclePlan(variableMask, size, contiguousCycles,
+	                cycleMasks, cycleBitMasks);
+	        int bestTupleBits = 0;
+	        int bestCycles = contiguousCycles;
 
+	        int packedCycles = packedTupleCycleCount(variableMask, cfg);
 	        if (packedCycles < contiguousCycles || Apex.PACKED_TUPLE_CYCLES) {
-	            return tuples.buildPackedTupleLsdCyclePlan(variableMask, cfg,
+	            long packedScore = scorePackedTupleCyclePlan(variableMask, size, cfg.lsdBits);
+	            if (Apex.PACKED_TUPLE_CYCLES || packedScore < bestScore) {
+	                bestScore = packedScore;
+	                bestTupleBits = cfg.lsdBits;
+	                bestCycles = packedCycles;
+	            }
+	        }
+
+	        int maxStaggerBits = maxStaggerTupleBits(cfg);
+	        if (maxStaggerBits > cfg.lsdBits && size >= Apex.STAGGER_TUPLE_MIN_RECORDS &&
+	                !Apex.STAGGER_TUPLE_COST_MODEL) {
+	            int staggerCycles = packedTupleCycleCount(variableMask, maxStaggerBits);
+	            if (staggerCycles > 0 && staggerCycles < bestCycles) {
+	                bestTupleBits = maxStaggerBits;
+	            }
+	        } else if (maxStaggerBits > cfg.lsdBits && size >= Apex.STAGGER_TUPLE_MIN_RECORDS) {
+	            for (int bits = cfg.lsdBits + 1; bits <= maxStaggerBits; bits++) {
+	                long score = scorePackedTupleCyclePlan(variableMask, size, bits);
+	                if (score < bestScore) {
+	                    bestScore = score;
+	                    bestTupleBits = bits;
+	                    bestCycles = packedTupleCycleCount(variableMask, bits);
+	                }
+	            }
+
+	            if (shouldPreferMaxWidthTupleTail(variableMask, size, maxStaggerBits)) {
+	                bestTupleBits = maxStaggerBits;
+	            }
+	        }
+
+	        if (bestTupleBits > 0) {
+	            return tuples.buildPackedTupleCyclePlan(variableMask, bestTupleBits,
 	                    cycleShifts, cycleMasks, cycleBitMasks, cycleTuplePlans);
 	        }
 
@@ -133,8 +169,124 @@ public class lsdbucketplan {
 
 
 	  static int packedTupleCycleCount(long variableMask, Config cfg) {
+	        return packedTupleCycleCount(variableMask, cfg.lsdBits);
+	    }
+
+	  static int packedTupleCycleCount(long variableMask, int bitsPerCycle) {
 	        int variableBits = Long.bitCount(variableMask);
-	        return variableBits == 0 ? 0 : (variableBits + cfg.lsdBits - 1) / cfg.lsdBits;
+	        int cycleBits = Math.max(1, bitsPerCycle);
+	        return variableBits == 0 ? 0 : (variableBits + cycleBits - 1) / cycleBits;
+	    }
+
+	  static int maxStaggerTupleBits(Config cfg) {
+	        if (!Apex.STAGGER_TUPLE_CYCLES) {
+	            return 0;
+	        }
+
+	        int configured = Math.min(Apex.STAGGER_TUPLE_BITS, Apex.DIRECT_TUPLE_BITS);
+	        configured = Math.min(configured, Apex.MAX_DIRECT_TUPLE_BITS);
+	        return configured > cfg.lsdBits ? configured : 0;
+	    }
+
+	  static long scoreExistingCyclePlan(
+	            long variableMask,
+	            int size,
+	            int cycles,
+	            int[] cycleMasks,
+	            long[] cycleBitMasks
+	    ) {
+	        if (cycles == 0) {
+	            return 0L;
+	        }
+
+	        long consumed = 0L;
+	        long counterSlots = 0L;
+	        int plannedCycles = 0;
+	        int sparsePasses = 0;
+
+	        for (int cycle = 0; cycle < cycles; cycle++) {
+	            long bitMask = cycleBitMasks[cycle];
+	            counterSlots += (long) cycleMasks[cycle] + 1L;
+	            if (tuples.contiguousShift(bitMask) < 0) {
+	                sparsePasses++;
+	            }
+
+	            consumed |= bitMask;
+	            plannedCycles++;
+
+	            if (cycle + 1 < cycles) {
+	                long tailMask = variableMask & ~consumed;
+	                if (tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
+	                    counterSlots += tuples.tupleRadix(tailMask);
+	                    sparsePasses++;
+	                    return cyclePlanScore(size, plannedCycles + 1, counterSlots, sparsePasses);
+	                }
+	            }
+	        }
+
+	        return cyclePlanScore(size, plannedCycles, counterSlots, sparsePasses);
+	    }
+
+	  static long scorePackedTupleCyclePlan(long variableMask, int size, int bitsPerCycle) {
+	        int cycleBits = Math.max(1, Math.min(Apex.MAX_DIRECT_TUPLE_BITS, bitsPerCycle));
+	        long remaining = variableMask;
+	        long consumed = 0L;
+	        long counterSlots = 0L;
+	        int plannedPasses = 0;
+	        int sparsePasses = 0;
+
+	        while (remaining != 0L) {
+	            long bitMask = 0L;
+	            int bitsInCycle = 0;
+
+	            while (remaining != 0L && bitsInCycle < cycleBits) {
+	                long bit = remaining & -remaining;
+	                remaining ^= bit;
+	                bitMask |= bit;
+	                bitsInCycle++;
+	            }
+
+	            counterSlots += 1L << bitsInCycle;
+	            if (tuples.contiguousShift(bitMask) < 0) {
+	                sparsePasses++;
+	            }
+
+	            consumed |= bitMask;
+	            plannedPasses++;
+
+	            if (remaining != 0L) {
+	                long tailMask = variableMask & ~consumed;
+	                if (tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
+	                    counterSlots += tuples.tupleRadix(tailMask);
+	                    sparsePasses++;
+	                    return cyclePlanScore(size, plannedPasses + 1, counterSlots, sparsePasses);
+	                }
+	            }
+	        }
+
+	        return cyclePlanScore(size, plannedPasses, counterSlots, sparsePasses);
+	    }
+
+	  static long cyclePlanScore(
+	            int size,
+	            int plannedPasses,
+	            long counterSlots,
+	            int sparsePasses
+	    ) {
+	        long recordTraffic = (long) plannedPasses * Math.max(1, size);
+	        long sparsePenalty = (long) sparsePasses * Math.max(1, size >>> 4);
+	        return recordTraffic + counterSlots + sparsePenalty;
+	    }
+
+	  static boolean shouldPreferMaxWidthTupleTail(
+	            long variableMask,
+	            int size,
+	            int maxBits
+	    ) {
+	        int variableBits = Long.bitCount(variableMask);
+	        return variableBits > maxBits &&
+	                variableBits <= (maxBits << 1) &&
+	                size >= (1 << maxBits);
 	    }
 	  	
 
@@ -297,6 +449,12 @@ public class lsdbucketplan {
 	            return;
 	        }
 
+	        if (size > Apex.MAX_HEAP_SCRATCH_RECORDS &&
+	                tryDominantPrefixCoreSort(scratch, dst, startPos, size, sc, cfg,
+	                        plan.variableMasks[b], plan.msdShift)) {
+	            return;
+	        }
+
 	        if (size <= Apex.MAX_HEAP_SCRATCH_RECORDS) {
 	            lsdRadixSortPartition(
 	                    dst,
@@ -360,13 +518,7 @@ public class lsdbucketplan {
 	        long[] nextKeys = sc.k2;
 	        long[] nextValues = sc.v2;
 
-	        long p = base;
-
-	        for (int i = 0; i < size; i++) {
-	            currentKeys[i] = dst.get(Apex.LONG, p);
-	            currentValues[i] = dst.get(Apex.LONG, p + 8);
-	            p += Apex.RECORD_BYTES;
-	        }
+	        loadHeapPartition(dst, base, size, currentKeys, currentValues);
 
 	        for (int cycle = 0; cycle < cycles; cycle++) {
 	            int shift = cycleShifts[cycle];
@@ -379,10 +531,7 @@ public class lsdbucketplan {
 	            sc.ensureCounts(radixThisPass);
 	            Arrays.fill(sc.counts, 0, radixThisPass, 0);
 
-	            for (int i = 0; i < size; i++) {
-	                int bin = tools.digit(currentKeys[i], shift, mask, bitMask, smallTuplePlan);
-	                sc.counts[bin]++;
-	            }
+	            countHeapDigits(currentKeys, size, sc.counts, shift, mask, bitMask, smallTuplePlan);
 
 	            int sum = 0;
 
@@ -392,15 +541,8 @@ public class lsdbucketplan {
 	                sum += c;
 	            }
 
-	            for (int i = 0; i < size; i++) {
-	                long k = currentKeys[i];
-	                int bin = tools.digit(k, shift, mask, bitMask, smallTuplePlan);
-
-	                int pos = sc.counts[bin]++;
-
-	                nextKeys[pos] = k;
-	                nextValues[pos] = currentValues[i];
-	            }
+	            scatterHeapDigits(currentKeys, currentValues, nextKeys, nextValues, size,
+	                    sc.counts, shift, mask, bitMask, smallTuplePlan);
 
 	            long[] tk = currentKeys;
 	            currentKeys = nextKeys;
@@ -432,13 +574,201 @@ public class lsdbucketplan {
 	            nextValues = tv;
 	        }
 
-	        p = base;
+	        storeHeapPartition(dst, base, size, currentKeys, currentValues);
+	    }
 
-	        for (int i = 0; i < size; i++) {
-	            dst.set(Apex.LONG, p, currentKeys[i]);
-	            dst.set(Apex.LONG, p + 8, currentValues[i]);
+	    private static void loadHeapPartition(
+	            MemorySegment dst,
+	            long base,
+	            int size,
+	            long[] keys,
+	            long[] values
+	    ) {
+	        int i = 0;
+	        long p = base;
+
+	        if (useHeapUnroll8(size)) {
+	            int vectorEnd = size - (size & 7);
+	            for (; i < vectorEnd; i += 8) {
+	                keys[i] = dst.get(Apex.LONG, p);
+	                values[i] = dst.get(Apex.LONG, p + 8);
+	                keys[i + 1] = dst.get(Apex.LONG, p + 16);
+	                values[i + 1] = dst.get(Apex.LONG, p + 24);
+	                keys[i + 2] = dst.get(Apex.LONG, p + 32);
+	                values[i + 2] = dst.get(Apex.LONG, p + 40);
+	                keys[i + 3] = dst.get(Apex.LONG, p + 48);
+	                values[i + 3] = dst.get(Apex.LONG, p + 56);
+	                keys[i + 4] = dst.get(Apex.LONG, p + 64);
+	                values[i + 4] = dst.get(Apex.LONG, p + 72);
+	                keys[i + 5] = dst.get(Apex.LONG, p + 80);
+	                values[i + 5] = dst.get(Apex.LONG, p + 88);
+	                keys[i + 6] = dst.get(Apex.LONG, p + 96);
+	                values[i + 6] = dst.get(Apex.LONG, p + 104);
+	                keys[i + 7] = dst.get(Apex.LONG, p + 112);
+	                values[i + 7] = dst.get(Apex.LONG, p + 120);
+	                p += 8L * Apex.RECORD_BYTES;
+	            }
+	        }
+
+	        for (; i < size; i++) {
+	            keys[i] = dst.get(Apex.LONG, p);
+	            values[i] = dst.get(Apex.LONG, p + 8);
 	            p += Apex.RECORD_BYTES;
 	        }
+	    }
+
+	    private static void countHeapDigits(
+	            long[] keys,
+	            int size,
+	            int[] counts,
+	            int shift,
+	            int mask,
+	            long bitMask,
+	            long smallTuplePlan
+	    ) {
+	        int i = 0;
+
+	        if (useHeapUnroll8(size)) {
+	            int vectorEnd = size - (size & 7);
+	            for (; i < vectorEnd; i += 8) {
+	                counts[tools.digit(keys[i], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 1], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 2], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 3], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 4], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 5], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 6], shift, mask, bitMask, smallTuplePlan)]++;
+	                counts[tools.digit(keys[i + 7], shift, mask, bitMask, smallTuplePlan)]++;
+	            }
+	        }
+
+	        for (; i < size; i++) {
+	            counts[tools.digit(keys[i], shift, mask, bitMask, smallTuplePlan)]++;
+	        }
+	    }
+
+	    private static void scatterHeapDigits(
+	            long[] currentKeys,
+	            long[] currentValues,
+	            long[] nextKeys,
+	            long[] nextValues,
+	            int size,
+	            int[] counts,
+	            int shift,
+	            int mask,
+	            long bitMask,
+	            long smallTuplePlan
+	    ) {
+	        int i = 0;
+
+	        if (useHeapUnroll8(size)) {
+	            int vectorEnd = size - (size & 7);
+	            for (; i < vectorEnd; i += 8) {
+	                long k0 = currentKeys[i];
+	                int bin0 = tools.digit(k0, shift, mask, bitMask, smallTuplePlan);
+	                int pos0 = counts[bin0]++;
+	                nextKeys[pos0] = k0;
+	                nextValues[pos0] = currentValues[i];
+
+	                long k1 = currentKeys[i + 1];
+	                int bin1 = tools.digit(k1, shift, mask, bitMask, smallTuplePlan);
+	                int pos1 = counts[bin1]++;
+	                nextKeys[pos1] = k1;
+	                nextValues[pos1] = currentValues[i + 1];
+
+	                long k2 = currentKeys[i + 2];
+	                int bin2 = tools.digit(k2, shift, mask, bitMask, smallTuplePlan);
+	                int pos2 = counts[bin2]++;
+	                nextKeys[pos2] = k2;
+	                nextValues[pos2] = currentValues[i + 2];
+
+	                long k3 = currentKeys[i + 3];
+	                int bin3 = tools.digit(k3, shift, mask, bitMask, smallTuplePlan);
+	                int pos3 = counts[bin3]++;
+	                nextKeys[pos3] = k3;
+	                nextValues[pos3] = currentValues[i + 3];
+
+	                long k4 = currentKeys[i + 4];
+	                int bin4 = tools.digit(k4, shift, mask, bitMask, smallTuplePlan);
+	                int pos4 = counts[bin4]++;
+	                nextKeys[pos4] = k4;
+	                nextValues[pos4] = currentValues[i + 4];
+
+	                long k5 = currentKeys[i + 5];
+	                int bin5 = tools.digit(k5, shift, mask, bitMask, smallTuplePlan);
+	                int pos5 = counts[bin5]++;
+	                nextKeys[pos5] = k5;
+	                nextValues[pos5] = currentValues[i + 5];
+
+	                long k6 = currentKeys[i + 6];
+	                int bin6 = tools.digit(k6, shift, mask, bitMask, smallTuplePlan);
+	                int pos6 = counts[bin6]++;
+	                nextKeys[pos6] = k6;
+	                nextValues[pos6] = currentValues[i + 6];
+
+	                long k7 = currentKeys[i + 7];
+	                int bin7 = tools.digit(k7, shift, mask, bitMask, smallTuplePlan);
+	                int pos7 = counts[bin7]++;
+	                nextKeys[pos7] = k7;
+	                nextValues[pos7] = currentValues[i + 7];
+	            }
+	        }
+
+	        for (; i < size; i++) {
+	            long k = currentKeys[i];
+	            int bin = tools.digit(k, shift, mask, bitMask, smallTuplePlan);
+	            int pos = counts[bin]++;
+	            nextKeys[pos] = k;
+	            nextValues[pos] = currentValues[i];
+	        }
+	    }
+
+	    private static void storeHeapPartition(
+	            MemorySegment dst,
+	            long base,
+	            int size,
+	            long[] keys,
+	            long[] values
+	    ) {
+	        int i = 0;
+	        long p = base;
+
+	        if (useHeapUnroll8(size)) {
+	            int vectorEnd = size - (size & 7);
+	            for (; i < vectorEnd; i += 8) {
+	                dst.set(Apex.LONG, p, keys[i]);
+	                dst.set(Apex.LONG, p + 8, values[i]);
+	                dst.set(Apex.LONG, p + 16, keys[i + 1]);
+	                dst.set(Apex.LONG, p + 24, values[i + 1]);
+	                dst.set(Apex.LONG, p + 32, keys[i + 2]);
+	                dst.set(Apex.LONG, p + 40, values[i + 2]);
+	                dst.set(Apex.LONG, p + 48, keys[i + 3]);
+	                dst.set(Apex.LONG, p + 56, values[i + 3]);
+	                dst.set(Apex.LONG, p + 64, keys[i + 4]);
+	                dst.set(Apex.LONG, p + 72, values[i + 4]);
+	                dst.set(Apex.LONG, p + 80, keys[i + 5]);
+	                dst.set(Apex.LONG, p + 88, values[i + 5]);
+	                dst.set(Apex.LONG, p + 96, keys[i + 6]);
+	                dst.set(Apex.LONG, p + 104, values[i + 6]);
+	                dst.set(Apex.LONG, p + 112, keys[i + 7]);
+	                dst.set(Apex.LONG, p + 120, values[i + 7]);
+	                p += 8L * Apex.RECORD_BYTES;
+	            }
+	        }
+
+	        for (; i < size; i++) {
+	            dst.set(Apex.LONG, p, keys[i]);
+	            dst.set(Apex.LONG, p + 8, values[i]);
+	            p += Apex.RECORD_BYTES;
+	        }
+	    }
+
+	    private static boolean useHeapUnroll8(int size) {
+	        if (Apex.LSD_HEAP_UNROLL >= 8) {
+	            return true;
+	        }
+
+	        return Apex.LSD_HEAP_UNROLL == 0 && size >= Apex.LSD_HEAP_UNROLL_MIN_RECORDS;
 	    }
 
 	    static void lsdRadixSortPartitionOffHeap(
@@ -496,18 +826,21 @@ public class lsdbucketplan {
 	                MemorySegment target = currentInDst ? scratch : dst;
 	                long targetBase = currentInDst ? scratchBase : dstBase;
 
-	                tuples.tupleCountingPassSegments(
-	                        source,
-	                        sourceBase,
-	                        target,
-	                        targetBase,
-	                        size,
-	                        counts,
-	                        shift,
-	                        mask,
-	                        bitMask,
-	                        smallTuplePlan
-	                );
+	                try {
+	                    tuples.parallelTupleCountingPassSegments(
+	                            source,
+	                            sourceBase,
+	                            target,
+	                            targetBase,
+	                            size,
+	                            shift,
+	                            mask,
+	                            bitMask,
+	                            smallTuplePlan
+	                    );
+	                } catch (Exception e) {
+	                    throw new RuntimeException("Parallel off-heap radix pass failed", e);
+	                }
 
 	                currentInDst = !currentInDst;
 	            }
@@ -524,18 +857,21 @@ public class lsdbucketplan {
 	                MemorySegment target = currentInDst ? scratch : dst;
 	                long targetBase = currentInDst ? scratchBase : dstBase;
 
-	                tuples.tupleCountingPassSegments(
-	                        source,
-	                        sourceBase,
-	                        target,
-	                        targetBase,
-	                        size,
-	                        counts,
-	                        -1,
-	                        mask,
-	                        tupleTailMask,
-	                        tupleTailPlan
-	                );
+	                try {
+	                    tuples.parallelTupleCountingPassSegments(
+	                            source,
+	                            sourceBase,
+	                            target,
+	                            targetBase,
+	                            size,
+	                            -1,
+	                            mask,
+	                            tupleTailMask,
+	                            tupleTailPlan
+	                    );
+	                } catch (Exception e) {
+	                    throw new RuntimeException("Parallel off-heap tuple-tail pass failed", e);
+	                }
 
 	                currentInDst = !currentInDst;
 	            }
@@ -708,6 +1044,10 @@ public class lsdbucketplan {
 	    }
 
 	    public static int localMsdShiftForBucket(MsdBucketPlan plan, Config cfg, int b) {
+	        return localMsdShiftForBucket(plan, cfg, b, localMsdBits(cfg));
+	    }
+
+	    public static int localMsdShiftForBucket(MsdBucketPlan plan, Config cfg, int b, int localBits) {
 	        if (!Apex.LOCAL_MSD_REPARTITION) {
 	            return -1;
 	        }
@@ -734,7 +1074,6 @@ public class lsdbucketplan {
 	            return -1;
 	        }
 
-	        int localBits = localMsdBits(cfg);
 	        int highestVariableBit = 63 - Long.numberOfLeadingZeros(variableMask);
 	        int shift = Math.max(0, highestVariableBit - localBits + 1);
 	        long windowMask = tools.lowBitsMask(localBits) << shift;
@@ -747,8 +1086,280 @@ public class lsdbucketplan {
 	        return Apex.LOCAL_MSD_BITS > 0 ? Apex.LOCAL_MSD_BITS : cfg.msdBits;
 	    }
 
+	    public static int localMsdBitsForCandidateCount(Config cfg, int candidateCount) {
+	        int bits = localMsdBits(cfg);
+	        if (candidateCount <= 0 || Apex.LOCAL_MSD_MAX_CHILDREN <= 0) {
+	            return bits;
+	        }
+
+	        int childrenPerBucket = Math.max(1, Apex.LOCAL_MSD_MAX_CHILDREN / candidateCount);
+	        int cappedBits = 31 - Integer.numberOfLeadingZeros(childrenPerBucket);
+	        return Math.max(1, Math.min(bits, cappedBits));
+	    }
+
 	    public static int localMsdBucketCount(Config cfg) {
 	        return 1 << localMsdBits(cfg);
+	    }
+
+	    public static int localMsdBucketCount(int localBits) {
+	        return 1 << localBits;
+	    }
+
+	    static boolean tryDominantPrefixCoreSort(
+	            MemorySegment scratch,
+	            MemorySegment dst,
+	            long startPos,
+	            int size,
+	            Scratch sc,
+	            Config cfg,
+	            long variableMask,
+	            int remainingBits
+	    ) {
+	        if (!Apex.DOMINANT_CORE_FAST_PATH ||
+	                size <= Apex.MAX_HEAP_SCRATCH_RECORDS ||
+	                scratch == dst) {
+	            return false;
+	        }
+
+	        int candidateCap = Math.max(2, Math.min(256, Apex.DOMINANT_CORE_CANDIDATES));
+	        long[] candidates = new long[candidateCap];
+	        int[] votes = new int[candidateCap];
+	        boolean[] used = new boolean[candidateCap];
+	        int sample = Math.min(size, Math.max(1, Apex.DOMINANT_CORE_SAMPLE_RECORDS));
+	        long base = startPos << 4;
+	        long p = base;
+
+	        for (int i = 0; i < sample; i++) {
+	            long key = dst.get(Apex.LONG, p);
+	            int slot = findUsedKey(candidates, used, key);
+
+	            if (slot >= 0) {
+	                votes[slot]++;
+	            } else {
+	                int empty = findEmpty(used);
+	                if (empty >= 0) {
+	                    used[empty] = true;
+	                    candidates[empty] = key;
+	                    votes[empty] = 1;
+	                } else {
+	                    for (int c = 0; c < candidateCap; c++) {
+	                        if (--votes[c] == 0) {
+	                            used[c] = false;
+	                        }
+	                    }
+	                }
+	            }
+
+	            p += Apex.RECORD_BYTES;
+	        }
+
+	        int candidateCount = compactCandidates(candidates, used);
+	        if (candidateCount == 0) {
+	            return false;
+	        }
+
+	        int tableSize = 1;
+	        while (tableSize < candidateCount * 4) {
+	            tableSize <<= 1;
+	        }
+
+	        long[] tableKeys = new long[tableSize];
+	        int[] tableIndexes = new int[tableSize];
+	        boolean[] tableUsed = new boolean[tableSize];
+	        int[] counts = new int[candidateCount];
+
+	        for (int i = 0; i < candidateCount; i++) {
+	            insertCandidate(tableKeys, tableIndexes, tableUsed, candidates[i], i);
+	        }
+
+	        p = base;
+	        long end = base + ((long) size << 4);
+	        while (p < end) {
+	            long key = dst.get(Apex.LONG, p);
+	            int index = lookupCandidate(tableKeys, tableIndexes, tableUsed, key);
+	            if (index >= 0) {
+	                counts[index]++;
+	            }
+	            p += Apex.RECORD_BYTES;
+	        }
+
+	        int minPerKey = Math.max(2, size / Math.max(2, Apex.DOMINANT_KEY_MIN_SHARE_DIVISOR));
+	        int heavyCount = 0;
+
+	        for (int i = 0; i < candidateCount; i++) {
+	            if (counts[i] >= minPerKey) {
+	                candidates[heavyCount] = candidates[i];
+	                counts[heavyCount] = counts[i];
+	                heavyCount++;
+	            }
+	        }
+
+	        if (heavyCount == 0) {
+	            return false;
+	        }
+
+	        sortCandidateCounts(candidates, counts, heavyCount);
+
+	        tableSize = 1;
+	        while (tableSize < heavyCount * 4) {
+	            tableSize <<= 1;
+	        }
+
+	        tableKeys = new long[tableSize];
+	        tableIndexes = new int[tableSize];
+	        tableUsed = new boolean[tableSize];
+
+	        long coreRecords = 0L;
+	        for (int i = 0; i < heavyCount; i++) {
+	            insertCandidate(tableKeys, tableIndexes, tableUsed, candidates[i], i);
+	            coreRecords += counts[i];
+	        }
+
+	        long minRequired = (long) size * Math.max(1, Apex.DOMINANT_CORE_MIN_SHARE_PERCENT);
+	        if (coreRecords * 100L < minRequired || coreRecords >= size) {
+	            return false;
+	        }
+
+	        boolean sawNonCore = false;
+	        long nonCoreMin = 0L;
+	        long coreMax = candidates[heavyCount - 1];
+	        p = base;
+
+	        while (p < end) {
+	            long key = dst.get(Apex.LONG, p);
+	            if (lookupCandidate(tableKeys, tableIndexes, tableUsed, key) < 0) {
+	                if (!sawNonCore || Long.compareUnsigned(key, nonCoreMin) < 0) {
+	                    nonCoreMin = key;
+	                }
+	                sawNonCore = true;
+	            }
+	            p += Apex.RECORD_BYTES;
+	        }
+
+	        if (!sawNonCore || Long.compareUnsigned(coreMax, nonCoreMin) >= 0) {
+	            return false;
+	        }
+
+	        int[] offsets = new int[heavyCount];
+	        int running = 0;
+	        for (int i = 0; i < heavyCount; i++) {
+	            offsets[i] = running;
+	            running += counts[i];
+	        }
+
+	        int nonCoreOffset = (int) coreRecords;
+	        p = base;
+	        long scratchBase = base;
+
+	        while (p < end) {
+	            long key = dst.get(Apex.LONG, p);
+	            long value = dst.get(Apex.LONG, p + 8);
+	            int index = lookupCandidate(tableKeys, tableIndexes, tableUsed, key);
+	            int out = index >= 0 ? offsets[index]++ : nonCoreOffset++;
+	            long target = scratchBase + ((long) out << 4);
+
+	            scratch.set(Apex.LONG, target, key);
+	            scratch.set(Apex.LONG, target + 8, value);
+	            p += Apex.RECORD_BYTES;
+	        }
+
+	        try {
+	            tools.parallelBulkCopy(scratch, scratchBase, dst, base, size);
+	        } catch (Exception e) {
+	            throw new RuntimeException("Dominant core copy failed", e);
+	        }
+
+	        int tailSize = size - (int) coreRecords;
+	        if (tailSize > 1) {
+	            sortPartitionByVariableMask(
+	                    scratch,
+	                    dst,
+	                    startPos + coreRecords,
+	                    tailSize,
+	                    sc,
+	                    cfg,
+	                    variableMask,
+	                    remainingBits
+	            );
+	        }
+
+	        return true;
+	    }
+
+	    static int findUsedKey(long[] keys, boolean[] used, long key) {
+	        for (int i = 0; i < keys.length; i++) {
+	            if (used[i] && keys[i] == key) {
+	                return i;
+	            }
+	        }
+	        return -1;
+	    }
+
+	    static int findEmpty(boolean[] used) {
+	        for (int i = 0; i < used.length; i++) {
+	            if (!used[i]) {
+	                return i;
+	            }
+	        }
+	        return -1;
+	    }
+
+	    static int compactCandidates(long[] candidates, boolean[] used) {
+	        int count = 0;
+	        for (int i = 0; i < candidates.length; i++) {
+	            if (used[i]) {
+	                candidates[count++] = candidates[i];
+	            }
+	        }
+	        return count;
+	    }
+
+	    static void insertCandidate(long[] keys, int[] indexes, boolean[] used, long key, int index) {
+	        int mask = keys.length - 1;
+	        int slot = Long.hashCode(key) & mask;
+
+	        while (used[slot]) {
+	            if (keys[slot] == key) {
+	                indexes[slot] = index;
+	                return;
+	            }
+	            slot = (slot + 1) & mask;
+	        }
+
+	        used[slot] = true;
+	        keys[slot] = key;
+	        indexes[slot] = index;
+	    }
+
+	    static int lookupCandidate(long[] keys, int[] indexes, boolean[] used, long key) {
+	        int mask = keys.length - 1;
+	        int slot = Long.hashCode(key) & mask;
+
+	        while (used[slot]) {
+	            if (keys[slot] == key) {
+	                return indexes[slot];
+	            }
+	            slot = (slot + 1) & mask;
+	        }
+
+	        return -1;
+	    }
+
+	    static void sortCandidateCounts(long[] keys, int[] counts, int size) {
+	        for (int i = 1; i < size; i++) {
+	            long key = keys[i];
+	            int count = counts[i];
+	            int j = i - 1;
+
+	            while (j >= 0 && Long.compareUnsigned(keys[j], key) > 0) {
+	                keys[j + 1] = keys[j];
+	                counts[j + 1] = counts[j];
+	                j--;
+	            }
+
+	            keys[j + 1] = key;
+	            counts[j + 1] = count;
+	        }
 	    }
 
 	    static void sortPartitionByVariableMask(
@@ -780,10 +1391,17 @@ public class lsdbucketplan {
 	            return;
 	        }
 
+	        if (size > Apex.MAX_HEAP_SCRATCH_RECORDS &&
+	                tryDominantPrefixCoreSort(scratch, dst, startPos, size, sc, cfg,
+	                        variableMask, remainingBits)) {
+	            return;
+	        }
+
 	        int cycles = buildLsdCyclePlan(
 	                variableMask,
 	                cfg,
 	                remainingBits,
+	                size,
 	                sc.cycleShifts,
 	                sc.cycleMasks,
 	                sc.cycleBitMasks,

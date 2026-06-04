@@ -2,12 +2,10 @@ package scatter;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.concurrent.Future;
 
 import MSD.msdbucketplan.MsdBucketPlan;
 import Tools.tools;
-import Tuples.tuples;
 import config.configurations.Config;
 import main.Apex;
 
@@ -34,8 +32,6 @@ public class scattered {
         boolean[][] localDescending = plan.localDescending;
         int[][][] localThreadOffsets = plan.localThreadScatterOffsets;
         boolean hasDescendingScatter = hasDescendingScatterWork(plan, cfg);
-        FusedTupleScatter fusedTuples = buildFusedTupleScatter(src, n, plan, cfg);
-        boolean hasFusedTuples = fusedTuples != null;
 
         for (int t = 0; t < Apex.THREADS; t++) {
             final int tid = t;
@@ -59,17 +55,14 @@ public class scattered {
 
                 // --- 🚀 Stride Phase: Global MSD Out-of-Place Shuffling Track ---
                 if (!hasLocalMsd) {
-                    if (hasDescendingScatter || hasFusedTuples) {
+                    if (hasDescendingScatter) {
                         while (p < end) {
                             long k = src.get(Apex.LONG, p);
                             long v = src.get(Apex.LONG, p + 8);
                             int b = (int) ((k >>> msdShift) & bucketMask);
                             long q;
-                            int fusedIndex = hasFusedTuples ? fusedTuples.bucketToIndex[b] : -1;
 
-                            if (fusedIndex >= 0) {
-                                q = fusedTuples.nextDestination(fusedIndex, tid, bucketStarts[b], k) << 4;
-                            } else if (bucketFlags[b] == Apex.BUCKET_DESCENDING) {
+                            if (bucketFlags[b] == Apex.BUCKET_DESCENDING) {
                                 q = (bucketStarts[b] + bucketSizes[b] - 1L - out[b]) << 4;
                                 out[b]++;
                             } else {
@@ -187,10 +180,7 @@ public class scattered {
                     int b = (int) ((k >>> msdShift) & bucketMask);
                     int localShift = localMsdShifts[b];
                     long q;
-                    int fusedIndex = hasFusedTuples ? fusedTuples.bucketToIndex[b] : -1;
-                    if (fusedIndex >= 0) {
-                        q = fusedTuples.nextDestination(fusedIndex, tid, bucketStarts[b], k) << 4;
-                    } else if (localShift >= 0) {
+                    if (localShift >= 0) {
                         int child = (int) ((k >>> localShift) & (localSizes[b].length - 1));
                         int[] childOut = localThreadOffsets[b][tid];
                         if (localDescending[b] != null && localDescending[b][child] &&
@@ -217,154 +207,6 @@ public class scattered {
         tools.waitForFutures(futures);
         if (hasDescendingScatter) {
             markDescendingScatterNormalized(plan, cfg);
-        }
-        if (hasFusedTuples) {
-            markFusedTupleScatterNormalized(plan, fusedTuples);
-        }
-    }
-
-    private static final class FusedTupleScatter {
-        final int[] bucketToIndex;
-        final int[] buckets;
-        final long[] masks;
-        final int[] radices;
-        final int[][] threadOffsets;
-
-        FusedTupleScatter(int[] bucketToIndex, int[] buckets, long[] masks, int[] radices, int[][] threadOffsets) {
-            this.bucketToIndex = bucketToIndex;
-            this.buckets = buckets;
-            this.masks = masks;
-            this.radices = radices;
-            this.threadOffsets = threadOffsets;
-        }
-
-        long nextDestination(int fusedIndex, int threadId, long bucketStart, long key) {
-            int radix = radices[fusedIndex];
-            int bin = (int) Long.compress(key, masks[fusedIndex]);
-            return bucketStart + threadOffsets[fusedIndex][threadId * radix + bin]++;
-        }
-    }
-
-    private static FusedTupleScatter buildFusedTupleScatter(
-            MemorySegment src,
-            long n,
-            MsdBucketPlan plan,
-            Config cfg
-    ) throws Exception {
-        int[] bucketToIndex = new int[cfg.msdBucketCount];
-        Arrays.fill(bucketToIndex, -1);
-
-        int[] bucketsTemp = new int[cfg.msdBucketCount];
-        long[] masksTemp = new long[cfg.msdBucketCount];
-        int[] radicesTemp = new int[cfg.msdBucketCount];
-        long cells = 0L;
-        int count = 0;
-
-        for (int b = 0; b < cfg.msdBucketCount; b++) {
-            if (plan.localMsdShifts[b] >= 0 ||
-                    plan.bucketFlags[b] != Apex.BUCKET_MIXED ||
-                    plan.cycleCounts[b] != 0 ||
-                    plan.tupleTailMasks[b] == 0L ||
-                    !tuples.tupleSpaceFitsDirectPass(plan.tupleTailMasks[b], plan.sizes[b])) {
-                continue;
-            }
-
-            int radix = tuples.tupleRadix(plan.tupleTailMasks[b]);
-            cells += (long) Apex.THREADS * radix;
-            if (cells > fusedTupleScatterMaxCells()) {
-                break;
-            }
-
-            bucketToIndex[b] = count;
-            bucketsTemp[count] = b;
-            masksTemp[count] = plan.tupleTailMasks[b];
-            radicesTemp[count] = radix;
-            count++;
-        }
-
-        if (count == 0 || cells > fusedTupleScatterMaxCells()) {
-            return null;
-        }
-
-        int[] buckets = Arrays.copyOf(bucketsTemp, count);
-        long[] masks = Arrays.copyOf(masksTemp, count);
-        int[] radices = Arrays.copyOf(radicesTemp, count);
-        int[][] threadOffsets = new int[count][];
-
-        for (int i = 0; i < count; i++) {
-            threadOffsets[i] = new int[Apex.THREADS * radices[i]];
-        }
-
-        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
-        long chunk = n / Apex.THREADS;
-        int bucketMask = cfg.msdBucketCount - 1;
-        int msdShift = plan.msdShift;
-
-        for (int t = 0; t < Apex.THREADS; t++) {
-            final int tid = t;
-
-            futures.add(Apex.POOL.submit(() -> {
-                long s = tid * chunk;
-                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
-                long p = s << 4;
-                long end = e << 4;
-
-                while (p < end) {
-                    long key = src.get(Apex.LONG, p);
-                    int bucket = (int) ((key >>> msdShift) & bucketMask);
-                    int fusedIndex = bucketToIndex[bucket];
-
-                    if (fusedIndex >= 0) {
-                        int radix = radices[fusedIndex];
-                        int bin = (int) Long.compress(key, masks[fusedIndex]);
-                        threadOffsets[fusedIndex][tid * radix + bin]++;
-                    }
-
-                    p += Apex.RECORD_BYTES;
-                }
-            }));
-        }
-
-        tools.waitForFutures(futures);
-
-        for (int i = 0; i < count; i++) {
-            int radix = radices[i];
-            int[] offsets = threadOffsets[i];
-            int sum = 0;
-
-            for (int bin = 0; bin < radix; bin++) {
-                int offset = sum;
-
-                for (int t = 0; t < Apex.THREADS; t++) {
-                    int cell = t * radix + bin;
-                    int threadCount = offsets[cell];
-                    offsets[cell] = offset;
-                    offset += threadCount;
-                }
-
-                sum = offset;
-            }
-
-            if (sum != plan.sizes[buckets[i]]) {
-                throw new RuntimeException("Fused tuple histogram mismatch for bucket " + buckets[i]);
-            }
-        }
-
-        return new FusedTupleScatter(bucketToIndex, buckets, masks, radices, threadOffsets);
-    }
-
-    private static long fusedTupleScatterMaxCells() {
-        return Long.getLong("apex.fusedTupleScatterMaxCells", 16L * 1024L * 1024L);
-    }
-
-    private static void markFusedTupleScatterNormalized(MsdBucketPlan plan, FusedTupleScatter fusedTuples) {
-        for (int bucket : fusedTuples.buckets) {
-            plan.bucketAscending[bucket] = true;
-            plan.bucketDescending[bucket] = false;
-            plan.bucketFlags[bucket] = Apex.BUCKET_ASCENDING;
-            plan.cycleCounts[bucket] = 0;
-            plan.tupleTailMasks[bucket] = 0L;
-            plan.tupleTailPlans[bucket] = 0L;
         }
     }
 

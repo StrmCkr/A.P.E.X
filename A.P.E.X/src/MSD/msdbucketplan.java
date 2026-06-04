@@ -27,6 +27,7 @@ public class msdbucketplan {
 	        public     boolean inputAscending;
 	        public     boolean inputDescending;
 	        public     boolean hasLocalMsd;
+	        public     double localMsdAttachSeconds;
 	        public     final int[] localMsdShifts;
 	        public     final int[] localBucketCounts;
 	        public     final long[][] localStarts;
@@ -158,6 +159,7 @@ public class msdbucketplan {
 	                            variableMask,
 	                            cfg,
 	                            msdShift,
+	                            size,
 	                            tempCycleShifts,
 	                            tempCycleMasks,
 	                            tempCycleBitMasks,
@@ -319,6 +321,7 @@ public class msdbucketplan {
 	            return;
 	        }
 
+	        long attachStart = System.nanoTime();
 	        int[] candidateIndexByBucket = new int[cfg.msdBucketCount];
 	        Arrays.fill(candidateIndexByBucket, -1);
 
@@ -328,9 +331,7 @@ public class msdbucketplan {
 	        for (int b = 0; b < cfg.msdBucketCount; b++) {
 	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b);
 	            if (localShift >= 0) {
-	                candidateIndexByBucket[b] = candidateCount;
 	                candidateBucketsTemp[candidateCount++] = b;
-	                plan.localMsdShifts[b] = localShift;
 	            }
 	        }
 
@@ -338,9 +339,30 @@ public class msdbucketplan {
 	            return;
 	        }
 
+	        Arrays.fill(candidateIndexByBucket, -1);
+	        int localBits = lsdbucketplan.localMsdBitsForCandidateCount(cfg, candidateCount);
+	        int filteredCandidateCount = 0;
+
+	        for (int i = 0; i < candidateCount; i++) {
+	            int b = candidateBucketsTemp[i];
+	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, localBits);
+	            if (localShift >= 0) {
+	                candidateIndexByBucket[b] = filteredCandidateCount;
+	                candidateBucketsTemp[filteredCandidateCount++] = b;
+	                plan.localMsdShifts[b] = localShift;
+	            }
+	        }
+
+	        candidateCount = filteredCandidateCount;
+
+	        if (candidateCount == 0) {
+	            plan.localMsdAttachSeconds += (System.nanoTime() - attachStart) / 1e9;
+	            return;
+	        }
+
 	        final int localCandidateCount = candidateCount;
 	        int[] candidateBuckets = Arrays.copyOf(candidateBucketsTemp, candidateCount);
-	        int localBucketCount = lsdbucketplan.localMsdBucketCount(cfg);
+	        int localBucketCount = lsdbucketplan.localMsdBucketCount(localBits);
 	        int localBucketMask = localBucketCount - 1;
 	        int rows = Apex.THREADS * candidateCount;
 	        int[][] childHistograms = new int[rows][localBucketCount];
@@ -512,6 +534,8 @@ public class msdbucketplan {
 	            plan.localBucketCounts[parent] = localBucketCount;
 	            plan.hasLocalMsd = true;
 	        }
+
+	        plan.localMsdAttachSeconds += (System.nanoTime() - attachStart) / 1e9;
 	    }
 
 	  static void recordLocalOrder(

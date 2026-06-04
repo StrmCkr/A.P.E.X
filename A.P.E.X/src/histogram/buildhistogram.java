@@ -51,7 +51,11 @@ public class buildhistogram {
                 long threadStart = p;
 
                 // Establish dynamic vector stride bounds based on active hardware width
-                int stepRecords = main.Apex.RECORDS_PER_REG;
+                int requestedStepRecords = Integer.getInteger(
+                        "apex.histogramStepRecords",
+                        Math.max(4, main.Apex.RECORDS_PER_REG)
+                );
+                int stepRecords = Math.max(1, Math.min(16, requestedStepRecords));
                 long strideBytes = (long) stepRecords << 4;
                 long unrolledEnd = end - strideBytes;
 

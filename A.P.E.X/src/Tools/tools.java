@@ -19,6 +19,14 @@ public class tools {
 	            "apex.copySliceRecords",
 	            4_194_304L
 	    );
+	  public static final long PARALLEL_ORDER_SCAN_MIN_RECORDS = Long.getLong(
+	            "apex.parallelOrderScanRecords",
+	            4_194_304L
+	    );
+	  public static final long ORDER_SCAN_SLICE_RECORDS = Long.getLong(
+	            "apex.orderScanSliceRecords",
+	            0L
+	    );
 	  public static final int ORDER_MIXED = 0;
 	  public static final int ORDER_ASCENDING = 1;
 	  public static final int ORDER_DESCENDING = 2;
@@ -242,6 +250,20 @@ public class tools {
 	     */
 	    public static int detectMonotonicOrder(MemorySegment src, long records) {
 	        if (records <= 1) return ORDER_ASCENDING;
+	        if (PARALLEL_ORDER_SCAN_MIN_RECORDS >= 0L &&
+	                Apex.POOL != null &&
+	                Apex.THREADS > 1 &&
+	                records >= PARALLEL_ORDER_SCAN_MIN_RECORDS) {
+	                try {
+	                    return detectMonotonicOrderParallel(src, records);
+	                } catch (Exception ex) {
+	                    throw new RuntimeException("Parallel order scan failed", ex);
+	                }
+	            }
+
+	        if (PARALLEL_ORDER_SCAN_MIN_RECORDS < 0L) {
+	            return detectMonotonicOrderSequential(src, 0L, records);
+	        }
 
 	        long end = records << 4;
 	        long unrolledEnd = end - 64; // Processes 4 records (64 bytes) per stride block
@@ -289,6 +311,170 @@ public class tools {
 	        // Return core mapping codes cleanly based on structural bit violations found
 	        if ((ascendingViolations & 1L) == 0) return ORDER_ASCENDING;
 	        if ((descendingViolations & 1L) == 0) return ORDER_DESCENDING;
+	        return ORDER_MIXED;
+	    }
+
+	    private static int detectMonotonicOrderParallel(MemorySegment src, long records) throws Exception {
+	        int tasks;
+	        if (ORDER_SCAN_SLICE_RECORDS > 0L) {
+	            long sliceRecords = ORDER_SCAN_SLICE_RECORDS;
+	            tasks = (int) Math.min(
+	                    (long) Apex.THREADS,
+	                    Math.max(1L, (records + sliceRecords - 1L) / sliceRecords)
+	            );
+	        } else {
+	            tasks = (int) Math.min((long) Apex.THREADS, records);
+	        }
+
+	        if (tasks <= 1) {
+	            return detectMonotonicOrderSequential(src, 0L, records);
+	        }
+
+	        long[] firstKeys = new long[tasks];
+	        long[] lastKeys = new long[tasks];
+	        boolean[] sawKeys = new boolean[tasks];
+	        boolean[] ascending = new boolean[tasks];
+	        boolean[] descending = new boolean[tasks];
+	        long recordsPerTask = records / tasks;
+	        ArrayList<Future<?>> futures = new ArrayList<>(tasks);
+
+	        for (int t = 0; t < tasks; t++) {
+	            final int tid = t;
+	            futures.add(Apex.POOL.submit(() -> {
+	                long start = (long) tid * recordsPerTask;
+	                long end = (tid == tasks - 1) ? records : start + recordsPerTask;
+	                scanMonotonicSlice(src, start, end, tid, firstKeys, lastKeys, sawKeys, ascending, descending);
+	            }));
+	        }
+
+	        waitForFutures(futures);
+
+	        boolean globalAscending = true;
+	        boolean globalDescending = true;
+	        boolean sawAny = false;
+	        long previousLast = 0L;
+
+	        for (int t = 0; t < tasks; t++) {
+	            if (!sawKeys[t]) {
+	                continue;
+	            }
+
+	            globalAscending &= ascending[t];
+	            globalDescending &= descending[t];
+
+	            if (sawAny) {
+	                int cmp = Long.compareUnsigned(previousLast, firstKeys[t]);
+	                globalAscending &= cmp <= 0;
+	                globalDescending &= cmp >= 0;
+	            }
+
+	            if (!globalAscending && !globalDescending) {
+	                return ORDER_MIXED;
+	            }
+
+	            previousLast = lastKeys[t];
+	            sawAny = true;
+	        }
+
+	        if (globalAscending) return ORDER_ASCENDING;
+	        if (globalDescending) return ORDER_DESCENDING;
+	        return ORDER_MIXED;
+	    }
+
+	    private static void scanMonotonicSlice(
+	            MemorySegment src,
+	            long startRecord,
+	            long endRecord,
+	            int tid,
+	            long[] firstKeys,
+	            long[] lastKeys,
+	            boolean[] sawKeys,
+	            boolean[] ascending,
+	            boolean[] descending
+	    ) {
+	        if (startRecord >= endRecord) {
+	            ascending[tid] = true;
+	            descending[tid] = true;
+	            return;
+	        }
+
+	        long firstKey = src.get(Apex.LONG, startRecord << 4);
+	        long lastKey = src.get(Apex.LONG, (endRecord - 1L) << 4);
+	        int order = detectMonotonicOrderSequential(src, startRecord, endRecord);
+
+	        firstKeys[tid] = firstKey;
+	        lastKeys[tid] = lastKey;
+	        sawKeys[tid] = true;
+	        ascending[tid] = order == ORDER_ASCENDING;
+	        descending[tid] = order == ORDER_DESCENDING ||
+	                (order == ORDER_ASCENDING && firstKey == lastKey);
+	    }
+
+	    private static int detectMonotonicOrderSequential(MemorySegment src, long startRecord, long endRecord) {
+	        long records = endRecord - startRecord;
+	        if (records <= 1) {
+	            return ORDER_ASCENDING;
+	        }
+
+	        long p = (startRecord + 1L) << 4;
+	        long end = endRecord << 4;
+	        long unrolledEnd = end - (8L * Apex.RECORD_BYTES);
+	        long prevKey = src.get(Apex.LONG, startRecord << 4);
+	        long ascendingViolations = 0L;
+	        long descendingViolations = 0L;
+
+	        while (p <= unrolledEnd) {
+	            long k0 = src.get(Apex.LONG, p);
+	            long k1 = src.get(Apex.LONG, p + 16);
+	            long k2 = src.get(Apex.LONG, p + 32);
+	            long k3 = src.get(Apex.LONG, p + 48);
+	            long k4 = src.get(Apex.LONG, p + 64);
+	            long k5 = src.get(Apex.LONG, p + 80);
+	            long k6 = src.get(Apex.LONG, p + 96);
+	            long k7 = src.get(Apex.LONG, p + 112);
+
+	            if (Long.compareUnsigned(prevKey, k0) > 0) ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k0, k1) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k1, k2) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k2, k3) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k3, k4) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k4, k5) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k5, k6) > 0)      ascendingViolations |= 1L;
+	            if (Long.compareUnsigned(k6, k7) > 0)      ascendingViolations |= 1L;
+
+	            if (Long.compareUnsigned(prevKey, k0) < 0) descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k0, k1) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k1, k2) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k2, k3) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k3, k4) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k4, k5) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k5, k6) < 0)      descendingViolations |= 1L;
+	            if (Long.compareUnsigned(k6, k7) < 0)      descendingViolations |= 1L;
+
+	            if (ascendingViolations != 0L && descendingViolations != 0L) {
+	                return ORDER_MIXED;
+	            }
+
+	            prevKey = k7;
+	            p += 8L * Apex.RECORD_BYTES;
+	        }
+
+	        while (p < end) {
+	            long key = src.get(Apex.LONG, p);
+	            int cmp = Long.compareUnsigned(prevKey, key);
+	            if (cmp > 0) ascendingViolations |= 1L;
+	            if (cmp < 0) descendingViolations |= 1L;
+
+	            if (ascendingViolations != 0L && descendingViolations != 0L) {
+	                return ORDER_MIXED;
+	            }
+
+	            prevKey = key;
+	            p += Apex.RECORD_BYTES;
+	        }
+
+	        if (ascendingViolations == 0L) return ORDER_ASCENDING;
+	        if (descendingViolations == 0L) return ORDER_DESCENDING;
 	        return ORDER_MIXED;
 	    }
 
