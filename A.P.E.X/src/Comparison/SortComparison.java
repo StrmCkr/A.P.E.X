@@ -100,7 +100,17 @@ public final class SortComparison {
         int warmups = DEFAULT_WARMUPS;
         int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
         int workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, threads / 2));
+        boolean descendingScatterFastPath = Boolean.parseBoolean(System.getProperty("apex.descendingScatter", "true"));
         int tupleBits = Integer.getInteger("apex.tupleBits", 9);
+        int contiguousTupleBits = Integer.getInteger("apex.contiguousTupleBits", Apex.DIRECT_TUPLE_CONTIGUOUS_BITS);
+        int directTupleInPlaceMaxRecords = Integer.getInteger(
+                "apex.directTupleInPlaceMaxRecords",
+                Apex.DEFAULT_DIRECT_TUPLE_IN_PLACE_MAX_RECORDS
+        );
+        int directTupleManyPartitionMin = Integer.getInteger(
+                "apex.directTupleManyPartitions",
+                Apex.DEFAULT_DIRECT_TUPLE_MANY_PARTITION_MIN
+        );
         int lsdHeapUnroll = Integer.getInteger("apex.lsdHeapUnroll", 0);
         int lsdHeapUnrollMinRecords = Integer.getInteger("apex.lsdHeapUnrollMinRecords", 4_096);
         int heapScratchRecords = Integer.getInteger("apex.heapScratchRecords", 1_048_576);
@@ -113,6 +123,7 @@ public final class SortComparison {
         int dominantKeyMinShareDivisor = Integer.getInteger("apex.dominantKeyMinShareDivisor", Apex.DOMINANT_KEY_MIN_SHARE_DIVISOR);
         int largePermits = 0;
         boolean orderFastPath = Boolean.parseBoolean(System.getProperty("apex.orderFastPath", "false"));
+        boolean signedKeys = Boolean.parseBoolean(System.getProperty("apex.signedKeys", "false"));
         boolean lsdWorkStealing = true;
         boolean tuplePacking = Boolean.getBoolean("apex.tuplePacking");
         boolean staggerTupleCycles = Boolean.parseBoolean(System.getProperty("apex.staggerTuples", "true"));
@@ -554,9 +565,13 @@ public final class SortComparison {
 
         @Override
         public void sort(long[] data) {
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
             Arrays.sort(data);
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
         }
     }
 
@@ -578,9 +593,13 @@ public final class SortComparison {
 
         @Override
         public void sort(long[] data) {
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
             Arrays.parallelSort(data);
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
         }
     }
     
@@ -683,7 +702,7 @@ public final class SortComparison {
             // counting
             int[] count = new int[RADIX];
             for (int i = lo; i < hi; i++) {
-                int d = (int) ((a[i] >>> shift) & MASK);
+                int d = tools.shiftedDigit(a[i], shift, MASK);
                 count[d]++;
             }
 
@@ -699,7 +718,7 @@ public final class SortComparison {
 
             // distribute (absolute indices)
             for (int i = lo; i < hi; i++) {
-                int d = (int) ((a[i] >>> shift) & MASK);
+                int d = tools.shiftedDigit(a[i], shift, MASK);
                 aux[next[d]++] = a[i];
             }
 
@@ -761,7 +780,7 @@ public final class SortComparison {
             int[] count = new int[RADIX];
             for (int i = lo; i < hi; i++) {
                 long key = recordKey(r, i);
-                int d = (int) ((key >>> shift) & MASK);
+                int d = tools.shiftedDigit(key, shift, MASK);
                 count[d]++;
             }
 
@@ -778,7 +797,7 @@ public final class SortComparison {
             // ---- Scatter into aux (0‑based window) ----
             for (int i = lo; i < hi; i++) {
                 long key = recordKey(r, i);
-                int d = (int) ((key >>> shift) & MASK);
+                int d = tools.shiftedDigit(key, shift, MASK);
 
                 int pos = next[d]++ - lo;   // convert absolute → window index
 
@@ -844,7 +863,7 @@ public final class SortComparison {
                 Arrays.fill(count, 0, radix, 0);
 
                 for (long value : in) {
-                    count[(int) ((value >>> shift) & mask)]++;
+                    count[tools.shiftedDigit(value, shift, mask)]++;
                 }
 
                 int sum = 0;
@@ -855,7 +874,7 @@ public final class SortComparison {
                 }
 
                 for (long value : in) {
-                    int digit = (int) ((value >>> shift) & mask);
+                    int digit = tools.shiftedDigit(value, shift, mask);
                     out[count[digit]++] = value;
                 }
 
@@ -910,7 +929,7 @@ public final class SortComparison {
                 Arrays.fill(count, 0, radix, 0);
 
                 for (int i = 0; i < n; i++) {
-                    count[(int) ((recordKey(in, i) >>> shift) & mask)]++;
+                    count[tools.shiftedDigit(recordKey(in, i), shift, mask)]++;
                 }
 
                 int sum = 0;
@@ -923,7 +942,7 @@ public final class SortComparison {
                 for (int i = 0; i < n; i++) {
                     int p = i << 1;
                     long key = in[p];
-                    int digit = (int) ((key >>> shift) & mask);
+                    int digit = tools.shiftedDigit(key, shift, mask);
                     int q = count[digit]++ << 1;
                     out[q] = key;
                     out[q + 1] = in[p + 1];
@@ -979,7 +998,7 @@ public final class SortComparison {
 
             int[] count = new int[RADIX];
             for (int i = start; i < end; i++) {
-                count[(int) ((recordKey(records, i) >>> shift) & MASK)]++;
+                count[tools.shiftedDigit(recordKey(records, i), shift, MASK)]++;
             }
 
             int[] begin = new int[RADIX];
@@ -994,7 +1013,7 @@ public final class SortComparison {
                 int limit = begin[b] + count[b];
                 while (next[b] < limit) {
                     long key = recordKey(records, next[b]);
-                    int digit = (int) ((key >>> shift) & MASK);
+                    int digit = tools.shiftedDigit(key, shift, MASK);
 
                     if (digit == b) {
                         next[b]++;
@@ -1059,7 +1078,7 @@ public final class SortComparison {
             int[] count = new int[RADIX];
 
             for (int i = start; i < end; i++) {
-                int digit = (int)((data[i] >>> shift) & MASK);
+                int digit = tools.shiftedDigit(data[i], shift, MASK);
                 count[digit]++;
             }
 
@@ -1079,7 +1098,7 @@ public final class SortComparison {
 
                 while (next[b] < limit) {
                     long value = data[next[b]];
-                    int digit = (int)((value >>> shift) & MASK);
+                    int digit = tools.shiftedDigit(value, shift, MASK);
 
                     if (digit == b) {
                         next[b]++;
@@ -1129,14 +1148,18 @@ public final class SortComparison {
         @Override
         public void sort(long[] data) {
 
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
             try {
                 Class<?> longArrays = Class.forName("it.unimi.dsi.fastutil.longs.LongArrays");
                 longArrays.getMethod("radixSort", long[].class).invoke(null, (Object) data);
             } catch (ReflectiveOperationException ex) {
                 throw new IllegalStateException("FastUtil LongArrays.radixSort is not on the classpath", ex);
             } finally {
-                flipSignBit(data);
+                if (!Apex.SIGNED_KEYS) {
+                    flipSignBit(data);
+                }
             }
         }
     }
@@ -1161,14 +1184,18 @@ public final class SortComparison {
         @Override
         public void sort(long[] data) {
 
-            flipSignBit(data);
+            if (!Apex.SIGNED_KEYS) {
+                flipSignBit(data);
+            }
             try {
                 Class<?> longArrays = Class.forName("it.unimi.dsi.fastutil.longs.LongArrays");
                 longArrays.getMethod("parallelRadixSort", long[].class).invoke(null, (Object) data);
             } catch (ReflectiveOperationException ex) {
                 throw new IllegalStateException("FastUtil LongArrays.parallelRadixSort is not on the classpath", ex);
             } finally {
-                flipSignBit(data);
+                if (!Apex.SIGNED_KEYS) {
+                    flipSignBit(data);
+                }
             }
         }
     }
@@ -1178,10 +1205,14 @@ public final class SortComparison {
         runoptions.applyApexSettings(
                 args.threads,
                 args.orderFastPath,
+                args.signedKeys,
                 args.lsdWorkStealing,
                 args.workStealBatch,
+                args.descendingScatterFastPath,
                 args.tuplePacking,
                 args.tupleBits,
+                args.directTupleInPlaceMaxRecords,
+                args.directTupleManyPartitionMin,
                 args.staggerTupleCycles,
                 args.staggerTupleCostModel,
                 args.staggerTupleBits,
@@ -1192,6 +1223,7 @@ public final class SortComparison {
                 args.localMsdBits,
                 args.largePermits
         );
+        Apex.DIRECT_TUPLE_CONTIGUOUS_BITS = args.contiguousTupleBits;
         Apex.LOCAL_MSD_MAX_CHILDREN = args.localMsdMaxChildren;
         Apex.DOMINANT_CORE_FAST_PATH = args.dominantCoreFastPath;
         Apex.DOMINANT_CORE_SAMPLE_RECORDS = args.dominantCoreSampleRecords;
@@ -1204,6 +1236,7 @@ public final class SortComparison {
     static Args parseArgs(String[] rawArgs) {
         Args args = new Args();
         boolean workStealBatchExplicit = false;
+        boolean directTupleManyPartitionExplicit = false;
 
         for (String raw : rawArgs) {
             String arg = raw.trim();
@@ -1222,6 +1255,27 @@ public final class SortComparison {
 
             switch (key) {
             case "curated": args.curated = runoptions.parseBoolean(value); break;
+            case "signed":
+            case "signedkeys":
+            case "signedkey":
+                args.signedKeys = runoptions.parseBoolean(value);
+                break;
+            case "keyorder": {
+                String v = value.trim().toLowerCase(Locale.ROOT);
+                if (v.equals("signed") || v.equals("signedlong") || v.equals("long")) {
+                    args.signedKeys = true;
+                } else if (v.equals("unsigned") || v.equals("unsignedlong")) {
+                    args.signedKeys = false;
+                } else {
+                    args.signedKeys = runoptions.parseBoolean(value);
+                }
+                break;
+            }
+                case "descendingscatter":
+                case "descscatter":
+                case "globaldescendingscatter":
+                    args.descendingScatterFastPath = runoptions.parseBoolean(value);
+                    break;
                 case "mode":
                     args.modes = new DataMode[] { dataparser.parseMode(value) };
                     break;
@@ -1251,6 +1305,24 @@ public final class SortComparison {
                     break;
                 case "tuplebits":
                     args.tupleBits = runoptions.parseNonNegativeInt(value);
+                    break;
+                case "contiguoustuplebits":
+                case "directtuplecontiguousbits":
+                case "contiguousdirecttuplebits":
+                    args.contiguousTupleBits = runoptions.parseNonNegativeInt(value);
+                    break;
+                case "directtupleinplacemax":
+                case "directtupleinplacemaxrecords":
+                case "tupleinplacemax":
+                case "tupleinplacemaxrecords":
+                    args.directTupleInPlaceMaxRecords = runoptions.parseIntCount(value, "directTupleInPlaceMaxRecords");
+                    break;
+                case "directtuplemanypartitions":
+                case "directtuplemanypartitionmin":
+                case "tuplemanypartitions":
+                case "tuplemanypartitionmin":
+                    args.directTupleManyPartitionMin = runoptions.parseNonNegativeInt(value);
+                    directTupleManyPartitionExplicit = true;
                     break;
                 case "staggertuples":
                 case "staggertuplecycles":
@@ -1347,8 +1419,23 @@ public final class SortComparison {
         if (!workStealBatchExplicit) {
             args.workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, args.threads / 2));
         }
+        if (!directTupleManyPartitionExplicit) {
+            args.directTupleManyPartitionMin = Integer.getInteger(
+                    "apex.directTupleManyPartitions",
+                    Apex.DEFAULT_DIRECT_TUPLE_MANY_PARTITION_MIN
+            );
+        }
         if (args.tupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
             throw new IllegalArgumentException("tupleBits must be <= " + Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+        if (args.contiguousTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
+            throw new IllegalArgumentException("contiguousTupleBits must be <= " + Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+        if (args.directTupleInPlaceMaxRecords < 0) {
+            throw new IllegalArgumentException("directTupleInPlaceMaxRecords must be non-negative");
+        }
+        if (args.directTupleManyPartitionMin < 0) {
+            throw new IllegalArgumentException("directTupleManyPartitions must be non-negative");
         }
         if (args.staggerTupleBits <= 0 || args.staggerTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
             throw new IllegalArgumentException("staggerTupleBits must be in 1.." + Apex.MAX_DIRECT_TUPLE_BITS);
@@ -1470,7 +1557,7 @@ public final class SortComparison {
 
         for (int i = 0; i < data.length; i++) {
             long value = data[i];
-            if (i > 0 && Long.compareUnsigned(previous, value) > 0) {
+            if (i > 0 && tools.compareKeys(previous, value) > 0) {
                 throw new RuntimeException("KEY ORDER FAIL at " + i);
             }
 
@@ -1495,7 +1582,7 @@ public final class SortComparison {
 
         for (long i = 0; i < records; i++) {
             long key = data.get(Apex.LONG, i << 4);
-            if (i > 0 && Long.compareUnsigned(previous, key) > 0) {
+            if (i > 0 && tools.compareKeys(previous, key) > 0) {
                 throw new RuntimeException("APEX KEY ORDER FAIL at " + i);
             }
 
@@ -1536,7 +1623,7 @@ public final class SortComparison {
             long key = data[p];
             long value = data[p + 1];
 
-            if (i > 0 && Long.compareUnsigned(previous, key) > 0) {
+            if (i > 0 && tools.compareKeys(previous, key) > 0) {
                 throw new RuntimeException("RECORD ORDER FAIL at " + i);
             }
 
@@ -1568,7 +1655,7 @@ public final class SortComparison {
         for (int i = 0; i < data.length; i++) {
             RecordItem item = data[i];
 
-            if (i > 0 && Long.compareUnsigned(previous, item.key) > 0) {
+            if (i > 0 && tools.compareKeys(previous, item.key) > 0) {
                 throw new RuntimeException("OBJECT RECORD ORDER FAIL at " + i);
             }
 
@@ -1590,14 +1677,14 @@ public final class SortComparison {
     }
 
     static int compareRecordItems(RecordItem left, RecordItem right) {
-        return Long.compareUnsigned(left.key, right.key);
+        return tools.compareKeys(left.key, right.key);
     }
 
     static void insertion(long[] data, int lo, int hi) {
         for (int i = lo + 1; i < hi; i++) {
             long key = data[i];
             int j = i - 1;
-            while (j >= lo && Long.compareUnsigned(data[j], key) > 0) {
+            while (j >= lo && tools.compareKeys(data[j], key) > 0) {
                 data[j + 1] = data[j];
                 j--;
             }
@@ -1612,7 +1699,7 @@ public final class SortComparison {
             long value = records[p + 1];
             int j = i - 1;
 
-            while (j >= lo && Long.compareUnsigned(recordKey(records, j), key) > 0) {
+            while (j >= lo && tools.compareKeys(recordKey(records, j), key) > 0) {
                 int from = j << 1;
                 int to = from + 2;
                 records[to] = records[from];
@@ -1646,17 +1733,17 @@ public final class SortComparison {
     }
 
     static long medianOfThree(long a, long b, long c) {
-        if (Long.compareUnsigned(a, b) > 0) {
+        if (tools.compareKeys(a, b) > 0) {
             long t = a;
             a = b;
             b = t;
         }
-        if (Long.compareUnsigned(b, c) > 0) {
+        if (tools.compareKeys(b, c) > 0) {
             long t = b;
             b = c;
             c = t;
         }
-        if (Long.compareUnsigned(a, b) > 0) {
+        if (tools.compareKeys(a, b) > 0) {
             b = a;
         }
         return b;
