@@ -51,8 +51,8 @@ public class verifier {
         AtomicLong firstOrderFailKey = new AtomicLong(0L);
         
         // Primed to bitwise hardware boundaries for unsigned evaluations
-        AtomicLong globalMinKey = new AtomicLong(-1L); // Unsigned Max (all bits 1)
-        AtomicLong globalMaxKey = new AtomicLong(0L);  // Unsigned Min (all bits 0)
+        AtomicLong globalMinKey = new AtomicLong(Apex.SIGNED_KEYS ? Long.MAX_VALUE : -1L);
+        AtomicLong globalMaxKey = new AtomicLong(Apex.SIGNED_KEYS ? Long.MIN_VALUE : 0L);
 
         int tasks = Apex.THREADS;
         long chunk = n / tasks;
@@ -96,7 +96,7 @@ public class verifier {
                     long v = data.get(Apex.LONG, p + 8);
 
                     // 1. ORDER CHECK
-                    if (i > startRecord && Long.compareUnsigned(prev, k) > 0) {
+                    if (i > startRecord && tools.compareKeys(prev, k) > 0) {
                         localFailFlags |= 1L;
                         recordFirstOrderFailure(firstOrderFailIndex, firstOrderFailPreviousKey, firstOrderFailKey, i, prev, k);
                     }
@@ -118,8 +118,8 @@ public class verifier {
                     localHashKV ^= mix64(k ^ (v * 0x9E3779B97F4A7C15L));
 
                     // 5. KEY RANGE TRACKING
-                    if (Long.compareUnsigned(k, localMin) < 0) localMin = k;
-                    if (Long.compareUnsigned(k, localMax) > 0) localMax = k;
+                    if (tools.compareKeys(k, localMin) < 0) localMin = k;
+                    if (tools.compareKeys(k, localMax) > 0) localMax = k;
 
                     prev = k;
                 }
@@ -136,11 +136,11 @@ public class verifier {
 
                 // Unsigned thread-safe atomic min/max comparisons
                 long currentMin;
-                while (Long.compareUnsigned(localMin, currentMin = globalMinKey.get()) < 0) {
+                while (tools.compareKeys(localMin, currentMin = globalMinKey.get()) < 0) {
                     if (globalMinKey.compareAndSet(currentMin, localMin)) break;
                 }
                 long currentMax;
-                while (Long.compareUnsigned(localMax, currentMax = globalMaxKey.get()) > 0) {
+                while (tools.compareKeys(localMax, currentMax = globalMaxKey.get()) > 0) {
                     if (globalMaxKey.compareAndSet(currentMax, localMax)) break;
                 }
             }));
@@ -164,7 +164,7 @@ public class verifier {
             if (!threadHasData[t]) continue;
             if (lastActiveTid != -1) {
                 // If the last key of the previous block is larger than the first key of the current block
-                if (Long.compareUnsigned(threadLastKeys[lastActiveTid], threadFirstKeys[t]) > 0) {
+                if (tools.compareKeys(threadLastKeys[lastActiveTid], threadFirstKeys[t]) > 0) {
                     finalFailFlags |= 1L; // Flag order failure safely
                     recordFirstOrderFailure(
                             firstOrderFailIndex,

@@ -22,10 +22,24 @@ public class runoptions {
         public  int threads = Integer.getInteger("apex.threads", Runtime.getRuntime().availableProcessors());
         public  int largePartitionPermits = 0;
         public  boolean orderFastPath = Boolean.parseBoolean(System.getProperty("apex.orderFastPath", "false"));
+        public  boolean signedKeys = Boolean.parseBoolean(System.getProperty("apex.signedKeys", "false"));
         public  boolean lsdWorkStealing = true;
         public  int workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, threads / 2));
+        public  boolean descendingScatterFastPath = Boolean.parseBoolean(System.getProperty("apex.descendingScatter", "true"));
         public  boolean packedTupleCycles = Boolean.getBoolean("apex.tuplePacking");
         public  int directTupleBits = Integer.getInteger("apex.tupleBits", 9);
+        public  int contiguousDirectTupleBits = Integer.getInteger(
+                "apex.contiguousTupleBits",
+                Apex.DIRECT_TUPLE_CONTIGUOUS_BITS
+        );
+        public  int directTupleInPlaceMaxRecords = Integer.getInteger(
+                "apex.directTupleInPlaceMaxRecords",
+                Apex.DEFAULT_DIRECT_TUPLE_IN_PLACE_MAX_RECORDS
+        );
+        public  int directTupleManyPartitionMin = Integer.getInteger(
+                "apex.directTupleManyPartitions",
+                Apex.DEFAULT_DIRECT_TUPLE_MANY_PARTITION_MIN
+        );
         public  boolean staggerTupleCycles = Boolean.parseBoolean(System.getProperty("apex.staggerTuples", "true"));
         public  boolean staggerTupleCostModel = Boolean.parseBoolean(System.getProperty("apex.staggerTupleCostModel", "true"));
         public  int staggerTupleBits = Integer.getInteger("apex.staggerTupleBits", 16);
@@ -60,6 +74,18 @@ public class runoptions {
 
         if (options.directTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
             throw new IllegalArgumentException("tupleBits must be <= " +  Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+
+        if (options.contiguousDirectTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
+            throw new IllegalArgumentException("contiguousTupleBits must be <= " +  Apex.MAX_DIRECT_TUPLE_BITS);
+        }
+
+        if (options.directTupleInPlaceMaxRecords < 0) {
+            throw new IllegalArgumentException("directTupleInPlaceMaxRecords must be non-negative");
+        }
+
+        if (options.directTupleManyPartitionMin < 0) {
+            throw new IllegalArgumentException("directTupleManyPartitions must be non-negative");
         }
 
         if (options.staggerTupleBits <= 0 || options.staggerTupleBits > Apex.MAX_DIRECT_TUPLE_BITS) {
@@ -121,10 +147,14 @@ public class runoptions {
         applyApexSettings(
                 options.threads,
                 options.orderFastPath,
+                options.signedKeys,
                 options.lsdWorkStealing,
                 options.workStealBatch,
+                options.descendingScatterFastPath,
                 options.packedTupleCycles,
                 options.directTupleBits,
+                options.directTupleInPlaceMaxRecords,
+                options.directTupleManyPartitionMin,
                 options.staggerTupleCycles,
                 options.staggerTupleCostModel,
                 options.staggerTupleBits,
@@ -135,6 +165,7 @@ public class runoptions {
                 options.localMsdBits,
                 options.largePartitionPermits
         );
+        Apex.DIRECT_TUPLE_CONTIGUOUS_BITS = options.contiguousDirectTupleBits;
         Apex.LOCAL_MSD_MAX_CHILDREN = options.localMsdMaxChildren;
         Apex.DOMINANT_CORE_FAST_PATH = options.dominantCoreFastPath;
         Apex.DOMINANT_CORE_SAMPLE_RECORDS = options.dominantCoreSampleRecords;
@@ -146,10 +177,14 @@ public class runoptions {
     public static void applyApexSettings(
             int threads,
             boolean orderFastPath,
+            boolean signedKeys,
             boolean lsdWorkStealing,
             int workStealBatch,
+            boolean descendingScatterFastPath,
             boolean packedTupleCycles,
             int directTupleBits,
+            int directTupleInPlaceMaxRecords,
+            int directTupleManyPartitionMin,
             boolean staggerTupleCycles,
             boolean staggerTupleCostModel,
             int staggerTupleBits,
@@ -162,10 +197,15 @@ public class runoptions {
     ) {
         Apex.THREADS = threads;
         Apex.ORDER_FAST_PATH = orderFastPath;
+        Apex.SIGNED_KEYS = signedKeys;
+        Apex.KEY_ORDER_XOR = signedKeys ? Long.MIN_VALUE : 0L;
         Apex.LSD_WORK_STEALING = lsdWorkStealing;
         Apex.WORK_STEAL_BATCH = workStealBatch;
+        Apex.DESCENDING_SCATTER_FAST_PATH = descendingScatterFastPath;
         Apex.PACKED_TUPLE_CYCLES = packedTupleCycles;
         Apex.DIRECT_TUPLE_BITS = directTupleBits;
+        Apex.DIRECT_TUPLE_IN_PLACE_MAX_RECORDS = directTupleInPlaceMaxRecords;
+        Apex.DIRECT_TUPLE_MANY_PARTITION_MIN = directTupleManyPartitionMin;
         Apex.STAGGER_TUPLE_CYCLES = staggerTupleCycles;
         Apex.STAGGER_TUPLE_COST_MODEL = staggerTupleCostModel;
         Apex.STAGGER_TUPLE_BITS = staggerTupleBits;
@@ -204,6 +244,7 @@ public class runoptions {
         Options options = new Options();
         ArrayList<String> positional = new ArrayList<>();
         boolean workStealBatchExplicit = false;
+        boolean directTupleManyPartitionExplicit = false;
 
         for (String raw : args) {
             String arg = raw.trim();
@@ -260,6 +301,22 @@ public class runoptions {
                 case "prescan":
                     options.orderFastPath = parseBoolean(value);
                     break;
+                case "signed":
+                case "signedkeys":
+                case "signedkey":
+                    options.signedKeys = parseBoolean(value);
+                    break;
+                case "keyorder": {
+                    String v = value.trim().toLowerCase(Locale.ROOT);
+                    if (v.equals("signed") || v.equals("signedlong") || v.equals("long")) {
+                        options.signedKeys = true;
+                    } else if (v.equals("unsigned") || v.equals("unsignedlong")) {
+                        options.signedKeys = false;
+                    } else {
+                        options.signedKeys = parseBoolean(value);
+                    }
+                    break;
+                }
                 case "workstealing":
                 case "lsdworkstealing":
                 case "steal":
@@ -270,6 +327,11 @@ public class runoptions {
                 case "workstealbatch":
                     options.workStealBatch = parsePositiveInt(value);
                     workStealBatchExplicit = true;
+                    break;
+                case "descendingscatter":
+                case "descscatter":
+                case "globaldescendingscatter":
+                    options.descendingScatterFastPath = parseBoolean(value);
                     break;
                 case "tuplepacking":
                 case "packedtuples":
@@ -282,6 +344,24 @@ public class runoptions {
                 case "tuplecapbits":
                 case "directtuplebits":
                     options.directTupleBits = parseNonNegativeInt(value);
+                    break;
+                case "contiguoustuplebits":
+                case "directtuplecontiguousbits":
+                case "contiguousdirecttuplebits":
+                    options.contiguousDirectTupleBits = parseNonNegativeInt(value);
+                    break;
+                case "directtupleinplacemax":
+                case "directtupleinplacemaxrecords":
+                case "tupleinplacemax":
+                case "tupleinplacemaxrecords":
+                    options.directTupleInPlaceMaxRecords = parseIntCount(value, "directTupleInPlaceMaxRecords");
+                    break;
+                case "directtuplemanypartitions":
+                case "directtuplemanypartitionmin":
+                case "tuplemanypartitions":
+                case "tuplemanypartitionmin":
+                    options.directTupleManyPartitionMin = parseNonNegativeInt(value);
+                    directTupleManyPartitionExplicit = true;
                     break;
                 case "staggertuples":
                 case "staggertuplecycles":
@@ -398,6 +478,13 @@ public class runoptions {
 
         if (!workStealBatchExplicit) {
             options.workStealBatch = Integer.getInteger("apex.workBatch", Math.max(4, options.threads / 2));
+        }
+
+        if (!directTupleManyPartitionExplicit) {
+            options.directTupleManyPartitionMin = Integer.getInteger(
+                    "apex.directTupleManyPartitions",
+                    Apex.DEFAULT_DIRECT_TUPLE_MANY_PARTITION_MIN
+            );
         }
 
         validateOptions(options);

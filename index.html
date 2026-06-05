@@ -16,15 +16,22 @@
       </div>
       <div class="control-panel">
         <div class="controls">
-          <label>
-            <span>N</span>
-            <input id="recordCount" type="number" min="0" max="1000000" step="1024" value="2048">
-          </label>
+          <div class="key-order-controls">
+            <label class="check-control">
+              <span>Signed</span>
+              <input id="signedKeys" type="checkbox">
+            </label>
 
-          <label>
-            <span>Data type</span>
-            <select id="dataMode"></select>
-          </label>
+            <label>
+              <span>N</span>
+              <input id="recordCount" type="number" min="0" max="1000000" step="1024" value="2048">
+            </label>
+
+            <label class="data-mode-control">
+              <span>Data type</span>
+              <select id="dataMode"></select>
+            </label>
+          </div>
 
           <label>
             <span>MSD</span>

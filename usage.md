@@ -65,6 +65,12 @@ Run 10 million random records:
 java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex mode=RANDOM records=10m
 ```
 
+Sort by signed `long` key order:
+
+```bash
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -cp out main.Apex mode=RANDOM records=10m signed=true
+```
+
 Set worker threads:
 
 ```bash
@@ -147,13 +153,20 @@ This bypasses auto-tuning and is recommended for reproducible comparisons.
 threads=auto
 threads=16
 orderFastPath=true
+signed=true
 workStealing=true
 workBatch=8
+descendingScatter=true
 ```
 
 `orderFastPath=true` enables the input-order pre-scan before MSD planning.
 Ascending input can return immediately; descending input can use the global
 reverse path.
+
+`signed=true` or `keyOrder=signed` sorts by signed `long` order while preserving
+the raw stored key bits. MSD scatter uses the direct unrolled scatter lane.
+`descendingScatter=true` lets planned descending input finish through scatter
+instead of a separate full reverse copy.
 
 `workStealing` enables dynamic redistribution of bucket refinement tasks.
 `workBatch` controls how many work items are claimed per shared queue hit.
@@ -162,6 +175,9 @@ reverse path.
 
 ```text
 tupleBits=9
+contiguousTupleBits=16
+directTupleInPlaceMax=262144
+directTupleManyPartitions=16
 tuplePacking=true
 staggerTuples=true
 staggerTupleBits=16
@@ -170,6 +186,14 @@ staggerTupleMinRecords=0
 ```
 
 `tupleBits` caps direct tuple-space width. The current maximum cap is `16`.
+`contiguousTupleBits` separately caps direct tuple projection for contiguous
+bit masks that fit heap refinement; sparse masks continue to use `tupleBits`.
+`directTupleInPlaceMax` controls when direct tuple projection uses the in-place
+cycle route instead of the off-heap scatter/copy route. The default is
+262,144 records; raise or lower it only for A/B testing large tuple buckets.
+`directTupleManyPartitions` keeps direct tuple buckets in-place when a plan has
+many tuple refinement items. The default is `16`; set it to `0` to disable
+that override.
 `tuplePacking=true` forces packed sparse tuple cycles. `staggerTuples=true`
 lets LSD refinement consider wider packed tuple cycles up to
 `staggerTupleBits`. With `staggerTupleCostModel=true`, candidate widths are
@@ -225,9 +249,14 @@ prefix.
 | `tiny`, `tinyRange` | Tiny threshold auto-tune range |
 | `threads` | Worker threads, or `auto` |
 | `orderFastPath`, `inputOrderFastPath`, `prescan` | Enable the input order pre-scan fast path |
+| `signed`, `signedKeys`, `keyOrder` | Sort by signed `long` order instead of unsigned order |
 | `workStealing`, `lsdWorkStealing`, `steal` | Enable/disable LSD work stealing |
 | `workBatch`, `stealBatch`, `workStealBatch` | Work claim batch size |
+| `descendingScatter`, `descScatter` | Normalize fully descending planned inputs through scatter |
 | `tupleBits`, `tupleCap`, `tupleCapBits`, `directTupleBits` | Direct tuple bit cap |
+| `contiguousTupleBits`, `directTupleContiguousBits`, `contiguousDirectTupleBits` | Direct tuple bit cap for contiguous masks |
+| `directTupleInPlaceMax`, `directTupleInPlaceMaxRecords`, `tupleInPlaceMax` | Max records for direct tuple in-place projection |
+| `directTupleManyPartitions`, `directTupleManyPartitionMin`, `tupleManyPartitions` | Direct tuple partition count that forces in-place projection |
 | `tuplePacking`, `packedTuples`, `tupleCycles`, `tuples` | Force packed sparse tuple cycles |
 | `staggerTuples`, `staggerTupleCycles` | Enable adaptive wider tuple-cycle planning |
 | `staggerTupleBits` | Max tuple-cycle width considered, capped at `16` |
@@ -337,7 +366,8 @@ display order is source, MSD, tiny, tuples, LSD, reverse, then sorted output.
 
 ## Notes
 
-- A.P.E.X. sorts unsigned 64-bit keys carried in 16-byte key/value records.
+- A.P.E.X. sorts unsigned 64-bit keys by default; use `signed=true` or
+  `keyOrder=signed` for signed `long` ordering.
 - Large runs are memory intensive.
 - Record buffers can require roughly `records * 16 * 2` bytes.
 - Runtime performance depends on CPU topology, memory bandwidth, JDK version,

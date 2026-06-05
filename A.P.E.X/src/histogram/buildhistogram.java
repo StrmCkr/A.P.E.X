@@ -2,7 +2,6 @@ package histogram;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.concurrent.Future;
 import Tools.tools;
 import config.configurations.Config;
@@ -41,7 +40,7 @@ public class buildhistogram {
                 boolean[] bucketSawKeys = result.bucketSawKeys[tid];
                 boolean[] bucketAscending = result.bucketAscending[tid];
                 boolean[] bucketDescending = result.bucketDescending[tid];
-                Arrays.fill(andMasks, ~0L);
+                long keyOrderXor = Apex.KEY_ORDER_XOR;
 
                 long s = tid * chunk;
                 long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
@@ -79,8 +78,8 @@ public class buildhistogram {
                         long recordOffset = p + ((long) i << 4);
                         long k = src.get(Apex.LONG, recordOffset);
 
-                        if (recordOffset > threadStart) {
-                            int cmp = Long.compareUnsigned(previousKey, k);
+                        if (recordOffset > threadStart && (ascending || descending)) {
+                            int cmp = Long.compareUnsigned(previousKey ^ keyOrderXor, k ^ keyOrderXor);
                             ascending &= cmp <= 0;
                             descending &= cmp >= 0;
                         }
@@ -88,16 +87,19 @@ public class buildhistogram {
                         lastKey = k;
 
                         // Calculate bucket mappings using your exact bitwise parameters
-                        int b = (int) ((k >>> msdShift) & bucketMask);
+                        int b = (int) (((k ^ keyOrderXor) >>> msdShift) & bucketMask);
                         if (bucketSawKeys[b]) {
-                            int bucketCmp = Long.compareUnsigned(bucketLastKeys[b], k);
-                            bucketAscending[b] &= bucketCmp <= 0;
-                            bucketDescending[b] &= bucketCmp >= 0;
+                            if (bucketAscending[b] || bucketDescending[b]) {
+                                int bucketCmp = Long.compareUnsigned(bucketLastKeys[b] ^ keyOrderXor, k ^ keyOrderXor);
+                                bucketAscending[b] &= bucketCmp <= 0;
+                                bucketDescending[b] &= bucketCmp >= 0;
+                                bucketLastKeys[b] = k;
+                            }
                         } else {
                             bucketFirstKeys[b] = k;
                             bucketSawKeys[b] = true;
+                            bucketLastKeys[b] = k;
                         }
-                        bucketLastKeys[b] = k;
                         hist[b]++;
                         orMasks[b] |= k;
                         andMasks[b] &= k;
@@ -110,24 +112,27 @@ public class buildhistogram {
                 while (p < end) {
                     long k = src.get(Apex.LONG, p);
 
-                    if (p > threadStart) {
-                        int cmp = Long.compareUnsigned(previousKey, k);
+                    if (p > threadStart && (ascending || descending)) {
+                        int cmp = Long.compareUnsigned(previousKey ^ keyOrderXor, k ^ keyOrderXor);
                         ascending &= cmp <= 0;
                         descending &= cmp >= 0;
                     }
                     previousKey = k;
                     lastKey = k;
 
-                    int b = (int) ((k >>> msdShift) & bucketMask);
+                    int b = (int) (((k ^ keyOrderXor) >>> msdShift) & bucketMask);
                     if (bucketSawKeys[b]) {
-                        int bucketCmp = Long.compareUnsigned(bucketLastKeys[b], k);
-                        bucketAscending[b] &= bucketCmp <= 0;
-                        bucketDescending[b] &= bucketCmp >= 0;
+                        if (bucketAscending[b] || bucketDescending[b]) {
+                            int bucketCmp = Long.compareUnsigned(bucketLastKeys[b] ^ keyOrderXor, k ^ keyOrderXor);
+                            bucketAscending[b] &= bucketCmp <= 0;
+                            bucketDescending[b] &= bucketCmp >= 0;
+                            bucketLastKeys[b] = k;
+                        }
                     } else {
                         bucketFirstKeys[b] = k;
                         bucketSawKeys[b] = true;
+                        bucketLastKeys[b] = k;
                     }
-                    bucketLastKeys[b] = k;
                     hist[b]++;
                     orMasks[b] |= k;
                     andMasks[b] &= k;

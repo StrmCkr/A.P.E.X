@@ -5,8 +5,9 @@
 A.P.E.X. is a high-performance Java sorting framework for large fixed-width
 64-bit key/value record datasets. It uses descriptor-driven radix planning,
 parallel scatter, per-bucket dispatch, tuple projection, tiny-sort fallbacks,
-and local refinement to sort unsigned 64-bit keys while avoiding unnecessary
-passes over bits that are already resolved.
+and local refinement to sort unsigned 64-bit keys by default, with an optional
+signed-key ordering mode, while avoiding unnecessary passes over bits that are
+already resolved.
 
 The project also includes an interactive browser visualizer that explains the
 execution plan: source array, MSD scatter, tiny routes, tuple routes, LSD
@@ -298,13 +299,20 @@ config=MSD_BITS,LSD_BITS,TINY_THRESHOLD
 threads=auto
 threads=16
 orderFastPath=true
+signed=true
 workStealing=true
 workBatch=8
+descendingScatter=true
 ```
 
 `orderFastPath=true` enables an input-order pre-scan before MSD planning so
 already ascending input can return immediately and fully descending input can
 take the global reverse path.
+`signed=true` or `keyOrder=signed` flips only the key ordering view
+(`key ^ Long.MIN_VALUE`); stored records keep their raw key bits.
+MSD scatter uses the direct unrolled scatter path.
+`descendingScatter=true` lets the planned MSD scatter normalize fully
+descending inputs instead of doing a separate whole-array reverse copy.
 
 Work stealing dynamically redistributes bucket refinement when buckets are
 imbalanced.
@@ -313,6 +321,9 @@ imbalanced.
 
 ```bash
 tupleBits=9
+contiguousTupleBits=16
+directTupleInPlaceMax=262144
+directTupleManyPartitions=16
 tuplePacking=true
 staggerTuples=true
 staggerTupleBits=16
@@ -321,6 +332,15 @@ staggerTupleMinRecords=0
 ```
 
 `tupleBits` caps direct tuple-space width. The current maximum cap is `16`.
+`contiguousTupleBits` lets plain contiguous tuple tails use a wider direct
+route when the partition fits heap refinement; sparse tuple masks still obey
+`tupleBits`.
+`directTupleInPlaceMax` controls when direct tuple projection uses the in-place
+cycle route instead of the off-heap scatter/copy route. The default is
+262,144 records.
+`directTupleManyPartitions` keeps direct tuple buckets in-place when a plan has
+many tuple refinement items. The default is `16`; set it to `0` to disable
+that override.
 `tuplePacking=true` forces packed sparse tuple cycles; automatic packed cycles
 can still be selected when they reduce cycle count. `staggerTuples=true` lets
 LSD refinement consider wider packed tuple cycles up to `staggerTupleBits`.
@@ -385,9 +405,14 @@ configuration.
 | `tiny` | Tiny threshold auto-tune range |
 | `threads` | Worker threads, or `auto` |
 | `orderFastPath`, `inputOrderFastPath`, `prescan` | Enable the input order pre-scan fast path |
+| `signed`, `signedKeys`, `keyOrder` | Sort by signed `long` order instead of unsigned order |
 | `workStealing` | Enable/disable LSD work stealing |
 | `workBatch` | Work-steal batch size |
+| `descendingScatter`, `descScatter` | Normalize fully descending planned inputs through scatter |
 | `tupleBits` | Direct tuple bit cap |
+| `contiguousTupleBits`, `directTupleContiguousBits` | Direct tuple bit cap for contiguous masks |
+| `directTupleInPlaceMax`, `directTupleInPlaceMaxRecords`, `tupleInPlaceMax` | Max records for direct tuple in-place projection |
+| `directTupleManyPartitions`, `directTupleManyPartitionMin`, `tupleManyPartitions` | Direct tuple partition count that forces in-place projection |
 | `tuplePacking` | Force packed tuple cycles |
 | `staggerTuples`, `staggerTupleCycles` | Enable adaptive wider tuple-cycle planning |
 | `staggerTupleBits` | Max tuple-cycle width considered, capped at `16` |

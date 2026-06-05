@@ -24,12 +24,13 @@ descriptor vocabulary, see [Data and Descriptors](data-descriptors.md).
 A.P.E.X. sorts fixed-width records:
 
 ```text
-record = (unsigned 64-bit key, 64-bit value)
+record = (raw 64-bit key, 64-bit value)
 record size = 16 bytes
 ```
 
-Ordering is by unsigned key. The value travels with the key and is used as the
-record payload.
+Ordering is by unsigned key by default. With `signed=true` or `keyOrder=signed`,
+digit extraction and comparisons use `key ^ Long.MIN_VALUE` as the ordering
+view, while the raw key/value record is preserved.
 
 ## Descriptor Model
 
@@ -156,6 +157,18 @@ Tuple projection appears in two places:
 Set `tupleBits=0` to prevent direct tuple-space termination. Packed sparse
 tuple cycles can be forced with `tuplePacking`; automatic packed cycles can
 still be selected when they reduce the cycle count.
+`contiguousTupleBits` is a separate cap for contiguous tuple masks that fit
+heap refinement, allowing low-bit tails to use shift/mask direct projection
+without raising the sparse tuple cap.
+
+Direct tuple projection uses the in-place cycle route up to
+`directTupleInPlaceMaxRecords`; larger direct tuple buckets use the off-heap
+scatter/copy route. The default is 262,144 records. Raise or lower the
+threshold for A/B testing.
+When a plan contains at least `directTupleManyPartitions` direct tuple
+refinement items, those tuple buckets stay in-place so bucket-level work
+stealing can process them without serializing on the off-heap permit. The
+default threshold is `16`.
 
 ## LSD Refinement
 
@@ -226,7 +239,7 @@ rules. The relevant named results include:
 | MSD preservation | Top-level bucket order is preserved during refinement |
 | Monotonic termination | Ascending and descending paths finish safely |
 | Active-domain resolution | Only unresolved active bits need further work |
-| A.P.E.X. sorting correctness | Final record order is unsigned sorted order |
+| A.P.E.X. sorting correctness | Final record order matches the selected key order |
 
 ## Implementation Map
 
@@ -257,6 +270,9 @@ The command-line controls are intentionally limited:
 | Tiny threshold | `tiny`, `config=MSD,LSD,TINY` |
 | Input order pre-scan | `orderFastPath`, `inputOrderFastPath`, `prescan` |
 | Tuple cap | `tupleBits` |
+| Contiguous tuple cap | `contiguousTupleBits`, `directTupleContiguousBits` |
+| Direct tuple in-place cap | `directTupleInPlaceMaxRecords`, `directTupleInPlaceMax` |
+| Direct tuple many-partition cap | `directTupleManyPartitions`, `directTupleManyPartitionMin` |
 | Tuple packing | `tuplePacking` |
 | Staggered tuple cycles | `staggerTuples`, `staggerTupleCycles` |
 | Staggered tuple width | `staggerTupleBits` |

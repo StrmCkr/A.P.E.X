@@ -33,7 +33,7 @@ body {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) minmax(0, 1.8fr);
   gap: 18px;
-  align-items: end;
+  align-items: start;
   margin-bottom: 16px;
 }
 
@@ -64,6 +64,7 @@ label {
 .control-panel {
   display: grid;
   gap: 10px;
+  padding-top: 64px;
   min-width: 0;
 }
 
@@ -72,6 +73,19 @@ label {
   grid-template-columns: repeat(auto-fit, minmax(82px, 1fr));
   gap: 8px;
   align-items: end;
+  min-width: 0;
+}
+
+.key-order-controls {
+  display: grid;
+  grid-column: span 4;
+  grid-template-columns: minmax(62px, 0.5fr) minmax(100px, 0.9fr) minmax(150px, 1.3fr);
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+.data-mode-control {
   min-width: 0;
 }
 
@@ -286,8 +300,16 @@ canvas {
     grid-template-columns: 1fr;
   }
 
+  .control-panel {
+    padding-top: 0;
+  }
+
   .controls {
     grid-template-columns: repeat(3, minmax(88px, 1fr));
+  }
+
+  .key-order-controls {
+    grid-column: 1 / -1;
   }
 
   .run-controls {

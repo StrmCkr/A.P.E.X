@@ -2,6 +2,7 @@ package tinysorts;
 
 import java.lang.foreign.MemorySegment;
 
+import Tools.tools;
 import main.Apex;
 import main.Apex.Scratch;
 
@@ -105,7 +106,7 @@ public class tinysort {
             long val = v[i];
             int j = i - 1;
 
-            while (j >= s && Long.compareUnsigned(k[j], key) > 0) {
+            while (j >= s && tools.compareKeys(k[j], key) > 0) {
                 k[j + 1] = k[j];
                 v[j + 1] = v[j];
                 j--;
@@ -127,7 +128,7 @@ public class tinysort {
 
             while (lo < hi) {
                 int mid = (lo + hi) >>> 1;
-                if (Long.compareUnsigned(k[mid], key) <= 0) {
+                if (tools.compareKeys(k[mid], key) <= 0) {
                     lo = mid + 1;
                 } else {
                     hi = mid;
@@ -163,9 +164,9 @@ public class tinysort {
         }
 
         int mid = (low + high) >>> 1;
-        if (Long.compareUnsigned(k[low], k[mid]) > 0) swap(k, v, low, mid);
-        if (Long.compareUnsigned(k[low], k[high]) > 0) swap(k, v, low, high);
-        if (Long.compareUnsigned(k[mid], k[high]) > 0) swap(k, v, mid, high);
+        if (tools.compareKeys(k[low], k[mid]) > 0) swap(k, v, low, mid);
+        if (tools.compareKeys(k[low], k[high]) > 0) swap(k, v, low, high);
+        if (tools.compareKeys(k[mid], k[high]) > 0) swap(k, v, mid, high);
 
         long pivot = k[mid];
         swap(k, v, mid, high - 1);
@@ -173,8 +174,8 @@ public class tinysort {
         int j = high - 1;
 
         while (true) {
-            while (Long.compareUnsigned(k[++i], pivot) < 0);
-            while (Long.compareUnsigned(k[--j], pivot) > 0);
+            while (tools.compareKeys(k[++i], pivot) < 0);
+            while (tools.compareKeys(k[--j], pivot) > 0);
             if (i >= j) break;
             swap(k, v, i, j);
         }
@@ -203,11 +204,11 @@ public class tinysort {
         int p = low, q = high;
 
         while (true) {
-            while (i <= j && Long.compareUnsigned(k[i], pivot) <= 0) {
+            while (i <= j && tools.compareKeys(k[i], pivot) <= 0) {
                 if (k[i] == pivot) swap(k, v, p++, i);
                 i++;
             }
-            while (i <= j && Long.compareUnsigned(k[j], pivot) >= 0) {
+            while (i <= j && tools.compareKeys(k[j], pivot) >= 0) {
                 if (k[j] == pivot) swap(k, v, q--, j);
                 j--;
             }
@@ -251,7 +252,7 @@ public class tinysort {
 
             // Histogram
             for (int i = lo; i < hi; i++) {
-                int digit = (int)((k[i] >>> shift) & MASK);
+                int digit = tools.shiftedDigit(k[i], shift, MASK);
                 count[digit + 1]++;
             }
 
@@ -264,7 +265,7 @@ public class tinysort {
 
             // Scatter into tk/tv, 0-based [0..size)
             for (int i = lo; i < hi; i++) {
-                int digit = (int)((k[i] >>> shift) & MASK);
+                int digit = tools.shiftedDigit(k[i], shift, MASK);
                 int pos   = count[digit]++;   // 0..size-1
                 tk[pos]   = k[i];
                 tv[pos]   = v[i];

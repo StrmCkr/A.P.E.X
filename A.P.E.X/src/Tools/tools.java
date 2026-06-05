@@ -131,6 +131,22 @@ public class tools {
 	        }
 	        return (1 << bits) - 1;
 	    }	
+
+	    public static long orderedKey(long key) {
+	        return key ^ Apex.KEY_ORDER_XOR;
+	    }
+
+	    public static int compareKeys(long left, long right) {
+	        return Long.compareUnsigned(orderedKey(left), orderedKey(right));
+	    }
+
+	    public static int shiftedDigit(long key, int shift, int mask) {
+	        return (int) ((orderedKey(key) >>> shift) & mask);
+	    }
+
+	    public static int compressedDigit(long key, long bitMask) {
+	        return (int) Long.compress(orderedKey(key), bitMask);
+	    }
 	    
 	    public static long bytesForRecords(long records) {
 	        if (records < 0 || records > Long.MAX_VALUE / Apex.RECORD_BYTES) {
@@ -138,16 +154,16 @@ public class tools {
 	        }
 	        return records * Apex.RECORD_BYTES;
 	    }
-	    public   static int lsdDigit(long key, int shift, int mask, long bitMask) {
-	        return digit(key, shift, mask, bitMask, 0L);
+	    public static int lsdDigit(long key, int shift, int mask, long bitMask) {
+	        return digit(key, shift, mask, bitMask);
 	    }
 
-	    public static int digit(long key, int shift, int mask, long bitMask, long smallTuplePlan) {
+	    public static int digit(long key, int shift, int mask, long bitMask) {
 	        if (shift >= 0) {
-	            return (int) ((key >>> shift) & mask);
+	            return shiftedDigit(key, shift, mask);
 	        }
 
-	        return tuples.tupleIndex(key, bitMask, smallTuplePlan);
+	        return tuples.tupleIndex(key, bitMask);
 	    }
 	    /**
 	     * 🚀 Hardware-Adaptive Non-Temporal Parallel Bulk Copy Engine.
@@ -285,15 +301,15 @@ public class tools {
 	            // True Unsigned Monotonic Ordering Evaluations:
 	            // An ascending violation occurs if a previous key is strictly greater than the current key (> 0).
 	            // A descending violation occurs if a previous key is strictly less than the current key (< 0).
-	            if (Long.compareUnsigned(prevKey, k0) > 0) ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k0, k1) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k1, k2) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k2, k3) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(prevKey, k0) > 0) ascendingViolations |= 1L;
+	            if (compareKeys(k0, k1) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k1, k2) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k2, k3) > 0)      ascendingViolations |= 1L;
 
-	            if (Long.compareUnsigned(prevKey, k0) < 0) descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k0, k1) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k1, k2) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k2, k3) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(prevKey, k0) < 0) descendingViolations |= 1L;
+	            if (compareKeys(k0, k1) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k1, k2) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k2, k3) < 0)      descendingViolations |= 1L;
 
 	            prevKey = k3;
 	            p += 64; // Advances by exactly one full cache line footprint width
@@ -302,8 +318,8 @@ public class tools {
 	        // Handle structural residual scalar tails safely using strict unsigned rules
 	        while (p < end) {
 	            long k = src.get(Apex.LONG, p);
-	            if (Long.compareUnsigned(prevKey, k) > 0) ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(prevKey, k) < 0) descendingViolations |= 1L;
+	            if (compareKeys(prevKey, k) > 0) ascendingViolations |= 1L;
+	            if (compareKeys(prevKey, k) < 0) descendingViolations |= 1L;
 	            prevKey = k;
 	            p += 16;
 	        }
@@ -363,7 +379,7 @@ public class tools {
 	            globalDescending &= descending[t];
 
 	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, firstKeys[t]);
+	                int cmp = compareKeys(previousLast, firstKeys[t]);
 	                globalAscending &= cmp <= 0;
 	                globalDescending &= cmp >= 0;
 	            }
@@ -433,23 +449,23 @@ public class tools {
 	            long k6 = src.get(Apex.LONG, p + 96);
 	            long k7 = src.get(Apex.LONG, p + 112);
 
-	            if (Long.compareUnsigned(prevKey, k0) > 0) ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k0, k1) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k1, k2) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k2, k3) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k3, k4) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k4, k5) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k5, k6) > 0)      ascendingViolations |= 1L;
-	            if (Long.compareUnsigned(k6, k7) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(prevKey, k0) > 0) ascendingViolations |= 1L;
+	            if (compareKeys(k0, k1) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k1, k2) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k2, k3) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k3, k4) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k4, k5) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k5, k6) > 0)      ascendingViolations |= 1L;
+	            if (compareKeys(k6, k7) > 0)      ascendingViolations |= 1L;
 
-	            if (Long.compareUnsigned(prevKey, k0) < 0) descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k0, k1) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k1, k2) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k2, k3) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k3, k4) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k4, k5) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k5, k6) < 0)      descendingViolations |= 1L;
-	            if (Long.compareUnsigned(k6, k7) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(prevKey, k0) < 0) descendingViolations |= 1L;
+	            if (compareKeys(k0, k1) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k1, k2) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k2, k3) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k3, k4) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k4, k5) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k5, k6) < 0)      descendingViolations |= 1L;
+	            if (compareKeys(k6, k7) < 0)      descendingViolations |= 1L;
 
 	            if (ascendingViolations != 0L && descendingViolations != 0L) {
 	                return ORDER_MIXED;
@@ -461,7 +477,7 @@ public class tools {
 
 	        while (p < end) {
 	            long key = src.get(Apex.LONG, p);
-	            int cmp = Long.compareUnsigned(prevKey, key);
+	            int cmp = compareKeys(prevKey, key);
 	            if (cmp > 0) ascendingViolations |= 1L;
 	            if (cmp < 0) descendingViolations |= 1L;
 
@@ -493,7 +509,7 @@ public class tools {
 
 	        for (int i = 1; i < adjacentRecords; i++) {
 	            long key = data.get(Apex.LONG, (long) i * Apex.RECORD_BYTES);
-	            int cmp = Long.compareUnsigned(previous, key);
+	            int cmp = compareKeys(previous, key);
 	            ascending &= cmp <= 0;
 	            descending &= cmp >= 0;
 
@@ -516,7 +532,7 @@ public class tools {
 	        for (int i = 0; i < samples && index + step < records; i++) {
 	            index += step;
 	            long key = data.get(Apex.LONG, index * Apex.RECORD_BYTES);
-	            int cmp = Long.compareUnsigned(previous, key);
+	            int cmp = compareKeys(previous, key);
 	            ascending &= cmp <= 0;
 	            descending &= cmp >= 0;
 

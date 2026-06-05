@@ -33,13 +33,15 @@ A.P.E.X. sorts fixed-width key/value records:
 
 ```text
 record = (key, value)
-key    = unsigned 64-bit integer
+key    = raw 64-bit integer
 value  = 64-bit payload
 size   = 16 bytes
 ```
 
-Ordering is by unsigned key. The value travels with the key and is used for
-pair-integrity verification after sorting.
+Ordering is unsigned by default. With `signed=true` or `keyOrder=signed`, A.P.E.X.
+uses signed `long` order by applying `key ^ Long.MIN_VALUE` only to the ordering
+view used by digit extraction, comparisons, and verification. The value travels
+with the raw key and is used for pair-integrity verification after sorting.
 
 The implementation stores records in off-heap memory segments as:
 
@@ -117,8 +119,8 @@ A.P.E.X. also tracks monotonicity:
 
 | Descriptor | Meaning | Route |
 | --- | --- | --- |
-| `ascending` | Records are already sorted by unsigned key | Done |
-| `descending` | Records are reverse sorted by unsigned key | Reverse |
+| `ascending` | Records are already sorted by selected key order | Done |
+| `descending` | Records are reverse sorted by selected key order | Reverse/scatter normalize |
 | `all-equal` | No key variation remains | Done |
 | `mixed` | Refinement is still required | Dispatch |
 
@@ -234,7 +236,7 @@ A.P.E.X. verifies more than sorted order. Verification checks:
 
 | Check | Purpose |
 | --- | --- |
-| Order | Keys are unsigned sorted |
+| Order | Keys are sorted by selected key order |
 | Pair integrity | Values remain attached to their keys |
 | Range integrity | Record domain is preserved |
 | XOR / sum / hash | Detect loss, duplication, or corruption |
@@ -284,4 +286,3 @@ preserve the descriptor invariants.
 | Tuple projection | `src/Tuples/tuples.java` |
 | Tiny routes | `src/tinysorts/tinysort.java` |
 | Verification | `src/Tools/verifier.java` |
-

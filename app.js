@@ -43,6 +43,7 @@ const TINY_PROFILES = [
   { id: "threeway", min: 128, max: 191, label: "threeWayQuickSort", range: "128-191", detail: "Bentley-McIlroy duplicate collapser" },
   { id: "msd8", min: 192, max: Number.POSITIVE_INFINITY, label: "MsdRadix8KV", range: "192+", detail: "8-bit MSD radix fallback" }
 ];
+const SIGN_BIT = 0x8000000000000000n;
 
 const DATA_MODES = [
   "RANDOM",
@@ -119,6 +120,7 @@ const defaultConfig = {
   lsdBits: 8,
   workers: 16,
   workStealing: true,
+  signedKeys: false,
   tuplesEnabled: true,
   tupleBits: 9,
   tinyThreshold: 128,
@@ -146,6 +148,42 @@ window.state = state;
 
 function u64(x) {
   return x & U64_MASK;
+}
+
+function keyOrderXor(cfg = state.cfg) {
+  return cfg.signedKeys ? SIGN_BIT : 0n;
+}
+
+function orderedKey(key, cfg = state.cfg) {
+  return u64(key ^ keyOrderXor(cfg));
+}
+
+function signedKeyValue(key) {
+  const value = u64(key);
+  return (value & SIGN_BIT) === 0n ? value : value - (U64_MASK + 1n);
+}
+
+function chartKeyValue(key, cfg = state.cfg) {
+  return cfg.signedKeys ? signedKeyValue(key) : orderedKey(key, cfg);
+}
+
+function chartKeyRange(min, max, cfg = state.cfg) {
+  let outMin = min;
+  let outMax = max;
+  if (outMin === outMax) outMax = outMin + 1n;
+  return { minKey: outMin, maxKey: outMax };
+}
+
+function keyOrderLabel(cfg = state.cfg) {
+  return cfg.signedKeys ? "signed" : "unsigned";
+}
+
+function compareKeys(left, right, cfg = state.cfg) {
+  const a = orderedKey(left, cfg);
+  const b = orderedKey(right, cfg);
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
 }
 
 function lowBitsMask(bits) {
@@ -218,14 +256,15 @@ function reverseBits64(x) {
   return u64((v << 32n) | (v >> 32n));
 }
 
-function recordColor(key) {
-  const hue = Number((u64(key) >> 48n) & 0xFFFFn) / 65535 * 360;
-  const light = 48 + Number((u64(key) >> 8n) & 0xFn);
+function recordColor(key, cfg = state.cfg) {
+  const displayKey = orderedKey(key, cfg);
+  const hue = Number((displayKey >> 48n) & 0xFFFFn) / 65535 * 360;
+  const light = 48 + Number((displayKey >> 8n) & 0xFn);
   return `hsl(${hue.toFixed(1)} 78% ${light}%)`;
 }
 
-function makeRecord(key, index) {
-  return { key: u64(key), value: BigInt(index), sourceIndex: index, color: recordColor(key) };
+function makeRecord(key, index, cfg = state.cfg) {
+  return { key: u64(key), value: BigInt(index), sourceIndex: index, color: recordColor(key, cfg) };
 }
 
 function keyForMode(mode, iRaw, nRaw) {
@@ -416,13 +455,13 @@ function generateRecords(cfg) {
   if (cfg.mode === "SINGLE_ELEMENT") count = 1;
   if (cfg.mode === "TWO_ELEMENTS_SORTED" || cfg.mode === "TWO_ELEMENTS_REVERSED") count = 2;
   const out = [];
-  for (let i = 0; i < count; i++) out.push(makeRecord(keyForMode(cfg.mode, i, count), i));
+  for (let i = 0; i < count; i++) out.push(makeRecord(keyForMode(cfg.mode, i, count), i, cfg));
   return out;
 }
 
 function compareRecords(a, b) {
-  if (a.key < b.key) return -1;
-  if (a.key > b.key) return 1;
+  const cmp = compareKeys(a.key, b.key);
+  if (cmp !== 0) return cmp;
   return a.sourceIndex - b.sourceIndex;
 }
 
@@ -433,8 +472,9 @@ function detectMonotonicOrder(records) {
   for (let i = 1; i < records.length; i++) {
     const prev = records[i - 1].key;
     const key = records[i].key;
-    ascending &&= prev <= key;
-    descending &&= prev >= key;
+    const cmp = compareKeys(prev, key);
+    ascending &&= cmp <= 0;
+    descending &&= cmp >= 0;
   }
   if (ascending) return "ascending";
   if (descending) return "descending";
@@ -449,7 +489,7 @@ function buildMsdHistograms(records, cfg, msdShift) {
   const andMasks = new Array(bucketCount).fill(U64_MASK);
 
   for (const rec of records) {
-    const b = Number((rec.key >> BigInt(msdShift)) & BigInt(bucketMask));
+    const b = Number((orderedKey(rec.key, cfg) >> BigInt(msdShift)) & BigInt(bucketMask));
     hist[b]++;
     orMasks[b] |= rec.key;
     andMasks[b] &= rec.key;
@@ -715,7 +755,7 @@ function scatterIntoMsdBuckets(records, plan, cfg) {
   const buckets = Array.from({ length: bucketCount }, (_, id) => []);
 
   for (const rec of records) {
-    const id = Number((rec.key >> BigInt(plan.msdShift)) & bucketMask);
+    const id = Number((orderedKey(rec.key, cfg) >> BigInt(plan.msdShift)) & bucketMask);
     buckets[id].push(rec);
   }
 
@@ -786,21 +826,30 @@ function buildLsdWorkBucketsByDescendingSize(plan, cfg) {
 }
 
 function digit(key, shift, mask, bitMask) {
-  if (shift >= 0) return Number((key >> BigInt(shift)) & BigInt(mask));
+  if (shift >= 0) return Number((orderedKey(key) >> BigInt(shift)) & BigInt(mask));
   return Number(compressBits(key, bitMask));
 }
 
 function compressBits(key, entropyMask) {
+  const displayKey = orderedKey(key);
   let out = 0n;
   let outBit = 1n;
   let mask = entropyMask;
   while (mask !== 0n) {
     const bit = mask & -mask;
-    if ((key & bit) !== 0n) out |= outBit;
+    if ((displayKey & bit) !== 0n) out |= outBit;
     outBit <<= 1n;
     mask ^= bit;
   }
   return out;
+}
+
+function tupleBinForKey(key, entropyMask) {
+  return Number(compressBits(key, entropyMask));
+}
+
+function tupleBinLabel() {
+  return state.cfg.signedKeys ? "compress(ordered key)" : "compress(key)";
 }
 
 function countingPass(records, pass) {
@@ -823,7 +872,7 @@ function tinySort(records) {
 function tupleCountingPass(records, entropyMask) {
   const bins = new Map();
   for (const rec of records) {
-    const id = Number(compressBits(rec.key, entropyMask));
+    const id = tupleBinForKey(rec.key, entropyMask);
     if (!bins.has(id)) bins.set(id, []);
     bins.get(id).push(rec);
   }
@@ -882,7 +931,7 @@ function buildExecutionSteps(plan, cfg, msdRecords) {
     steps.push({
       phase: "done",
       title: "Global ascending fast path",
-      status: "Global ascending: MSD/LSD skipped by input order fast path",
+      status: `Global ascending (${keyOrderLabel(cfg)} order): MSD/LSD skipped by input order fast path`,
       active: null,
       records: state.records
     });
@@ -893,7 +942,7 @@ function buildExecutionSteps(plan, cfg, msdRecords) {
     steps.push({
       phase: "done",
       title: "Global reverse",
-      status: "Global reverse: whole input reversed",
+      status: `Global reverse (${keyOrderLabel(cfg)} order): whole input reversed`,
       active: null,
       records: [...state.records].reverse()
     });
@@ -927,7 +976,7 @@ function buildExecutionSteps(plan, cfg, msdRecords) {
   steps.push({
     phase: "done",
     title: "Sorted output complete",
-    status: verifySorted(finalRecords) ? "Verified sorted by unsigned 64-bit key" : "Verifier failed: output order mismatch",
+    status: verifySorted(finalRecords) ? `Verified sorted by ${keyOrderLabel(cfg)} 64-bit key` : "Verifier failed: output order mismatch",
     active: null,
     records: finalRecords
   });
@@ -954,7 +1003,7 @@ function makeMsdScatterSteps(records, plan, cfg) {
 
       for (let i = batchStart; i < batchEnd; i++) {
         const record = records[i];
-        const bucket = Number((record.key >> BigInt(plan.msdShift)) & bucketMask);
+        const bucket = Number((orderedKey(record.key, cfg) >> BigInt(plan.msdShift)) & bucketMask);
         bucketCounts.set(bucket, (bucketCounts.get(bucket) || 0) + 1);
         if ((i - batchStart) % sampleStep === 0 || i === batchEnd - 1) {
           samples.push({ index: i, bucket, record });
@@ -1314,8 +1363,9 @@ function tinyFunctionBins(records, profile) {
       [2, { id: profile.id === "quick" ? "greater" : "greater-than-pivot", records: [] }]
     ]);
     for (const rec of records) {
-      const cmp = rec.key < pivot ? 0 : rec.key > pivot ? 2 : 1;
-      groups.get(cmp).records.push(rec);
+      const cmp = compareKeys(rec.key, pivot);
+      const group = cmp < 0 ? 0 : cmp > 0 ? 2 : 1;
+      groups.get(group).records.push(rec);
     }
     return [...groups.values()].filter(group => group.records.length > 0);
   }
@@ -1323,7 +1373,7 @@ function tinyFunctionBins(records, profile) {
   if (profile.id === "msd8") {
     const bins = new Map();
     for (const rec of records) {
-      const digit = Number((rec.key >> 56n) & 0xffn);
+      const digit = Number((orderedKey(rec.key) >> 56n) & 0xffn);
       if (!bins.has(digit)) bins.set(digit, []);
       bins.get(digit).push(rec);
     }
@@ -1346,7 +1396,7 @@ function makeTupleVisualOps(records, entropyMask, base, label) {
   const radix = tupleRadix(entropyMask);
   const counts = new Map();
   for (const rec of records) {
-    const bin = Number(compressBits(rec.key, entropyMask));
+    const bin = tupleBinForKey(rec.key, entropyMask);
     counts.set(bin, (counts.get(bin) || 0) + 1);
   }
 
@@ -1368,7 +1418,7 @@ function makeTupleVisualOps(records, entropyMask, base, label) {
 
   for (let i = 0; i < records.length; i++) {
     const rec = records[i];
-    const bin = Number(compressBits(rec.key, entropyMask));
+    const bin = tupleBinForKey(rec.key, entropyMask);
     const targetIndex = offsets.get(bin);
     offsets.set(bin, targetIndex + 1);
     placed[targetIndex] = rec;
@@ -1394,7 +1444,7 @@ function makeTupleVisualOps(records, entropyMask, base, label) {
           targetEnd: starts.get(bin) + counts.get(bin)
         },
         title: `${label} ${base.summary}`,
-        status: `${label}: OR^AND tuple mask ${keyLabel(entropyMask)} | compress(key)=${bin} -> slot ${base.start + targetIndex} of range ${base.start + starts.get(bin)}..${base.start + starts.get(bin) + counts.get(bin) - 1} | radix ${radix}`
+        status: `${label}: OR^AND tuple mask ${keyLabel(entropyMask)} | ${tupleBinLabel()}=${bin} -> slot ${base.start + targetIndex} of range ${base.start + starts.get(bin)}..${base.start + starts.get(bin) + counts.get(bin) - 1} | radix ${radix}`
       });
     }
   }
@@ -1546,7 +1596,7 @@ function stealLargestRemainingJob(localJobs, thief) {
 
 function verifySorted(records) {
   for (let i = 1; i < records.length; i++) {
-    if (records[i - 1].key > records[i].key) return false;
+    if (compareKeys(records[i - 1].key, records[i].key) > 0) return false;
   }
   return true;
 }
@@ -1589,14 +1639,14 @@ function reset() {
       {
         phase: "source",
         title: "Global order scan",
-        status: "Global ascending: input already sorted",
+        status: `Global ascending (${keyOrderLabel(cfg)} order): input already sorted`,
         active: null,
         records: state.records
       },
       {
         phase: "done",
         title: "Global ascending fast path",
-        status: "Global ascending: MSD plan/scatter/LSD skipped",
+        status: `Global ascending (${keyOrderLabel(cfg)} order): MSD plan/scatter/LSD skipped`,
         active: null,
         records: state.finalRecords
       }
@@ -1613,7 +1663,7 @@ function reset() {
       {
         phase: "source",
         title: "Global order scan",
-        status: "Global reverse: descending input fast path",
+        status: `Global reverse (${keyOrderLabel(cfg)} order): descending input fast path`,
         active: null,
         records: state.records
       },
@@ -1621,7 +1671,7 @@ function reset() {
       {
         phase: "done",
         title: "Global reverse",
-        status: "Global reverse: whole input reversed",
+        status: `Global reverse (${keyOrderLabel(cfg)} order): whole input reversed`,
         active: null,
         records: state.finalRecords
       }
@@ -1747,36 +1797,72 @@ function drawRecords(ctx, rect, records, opts = {}) {
   const stride = Math.max(1, Math.ceil(n / maxBars));
   const visualCount = Math.ceil(n / stride);
   const barWidth = w / visualCount;
+  const keyForChart = opts.signedBars === false ? key => orderedKey(key) : key => chartKeyValue(key);
   let min = opts.minKey;
   let max = opts.maxKey;
   if (min === undefined || max === undefined) {
-    min = records[0].key;
-    max = records[0].key;
+    min = keyForChart(records[0].key);
+    max = min;
     for (let i = 0; i < n; i += stride) {
       const rec = records[i];
-      if (rec.key < min) min = rec.key;
-      if (rec.key > max) max = rec.key;
+      const key = keyForChart(rec.key);
+      if (key < min) min = key;
+      if (key > max) max = key;
     }
   }
+  ({ minKey: min, maxKey: max } = chartKeyRange(min, max));
   const range = max === min ? 1n : max - min;
+  const signedBars = state.cfg.signedKeys && !opts.flat && opts.signedBars !== false;
+  const ratio = value => Math.max(0, Math.min(1, Number((value * 1000000n) / range) / 1000000));
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(x, y, w, h);
   ctx.clip();
 
+  let baselineY = y + h;
+  if (signedBars) {
+    if (max <= 0n) {
+      baselineY = y;
+    } else if (min >= 0n) {
+      baselineY = y + h;
+    } else {
+      baselineY = y + h - ratio(0n - min) * h;
+    }
+    ctx.strokeStyle = "rgba(237,243,241,0.32)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, baselineY);
+    ctx.lineTo(x + w, baselineY);
+    ctx.stroke();
+  }
+
   let visualIndex = 0;
   for (let i = 0; i < n; i += stride) {
     const rec = records[i];
-    const normRaw = Number(((rec.key - min) * 1000n) / range) / 1000;
-    const norm = Math.max(0, Math.min(1, normRaw));
-    const barH = opts.flat ? h : Math.max(1, norm * h);
+    const displayKey = keyForChart(rec.key);
     const muted = opts.mutedIndices && opts.mutedIndices.has(rec.sourceIndex);
     ctx.globalAlpha = muted ? 0.25 : 0.95;
     ctx.fillStyle = rec.color;
     const bx = x + visualIndex * barWidth;
     const drawW = Math.max(0.75, barWidth + 0.3);
-    ctx.fillRect(bx, opts.flat ? y : y + h - barH, drawW, barH);
+    if (signedBars) {
+      const valueY = y + h - ratio(displayKey - min) * h;
+      if (displayKey < 0n) {
+        const top = Math.max(y, baselineY);
+        const bottom = Math.min(y + h, Math.max(top, valueY));
+        ctx.fillRect(bx, top, drawW, Math.max(1, bottom - top));
+      } else {
+        const bottom = Math.min(y + h, baselineY);
+        const top = Math.max(y, Math.min(bottom, valueY));
+        ctx.fillRect(bx, top, drawW, Math.max(1, bottom - top));
+      }
+    } else {
+      const normRaw = Number(((displayKey - min) * 1000n) / range) / 1000;
+      const norm = Math.max(0, Math.min(1, normRaw));
+      const barH = opts.flat ? h : Math.max(1, norm * h);
+      ctx.fillRect(bx, opts.flat ? y : y + h - barH, drawW, barH);
+    }
     visualIndex++;
   }
   ctx.globalAlpha = 1;
@@ -1789,15 +1875,14 @@ function globalKeyRange() {
 
 function computeKeyRange(records) {
   if (!records || records.length === 0) return { minKey: 0n, maxKey: 1n };
-  let minKey = records[0].key;
-  let maxKey = records[0].key;
+  let minKey = chartKeyValue(records[0].key);
+  let maxKey = minKey;
   for (const rec of records) {
-    const key = rec.key;
+    const key = chartKeyValue(rec.key);
     if (key < minKey) minKey = key;
     if (key > maxKey) maxKey = key;
   }
-  if (minKey === maxKey) maxKey = minKey + 1n;
-  return { minKey, maxKey };
+  return chartKeyRange(minKey, maxKey);
 }
 
 function canvasFont(size) {
@@ -2070,8 +2155,8 @@ function drawBucketCell(ctx, x, y, w, h, bucket, active, done, completed) {
   ctx.rect(x, y, w, h);
   ctx.clip();
 
+  const labelH = Math.min(h - 2, done ? 42 : 40);
   if (h >= 18 && w >= 42) {
-    const labelH = Math.min(h - 2, done ? 36 : 34);
     ctx.fillStyle = "rgba(9,12,14,0.82)";
     ctx.fillRect(x + 1, y + 1, Math.max(1, w - 2), labelH);
     ctx.strokeStyle = "rgba(237,243,241,0.12)";
@@ -2089,12 +2174,16 @@ function drawBucketCell(ctx, x, y, w, h, bucket, active, done, completed) {
   }
 
   if (bucket.records.length) {
-    drawRecords(ctx, {
-      x: x + 5,
-      y: y + Math.min(36, Math.max(24, h * 0.4)),
-      w: Math.max(1, w - 10),
-      h: Math.max(1, h - Math.min(40, Math.max(28, h * 0.45)))
-    }, bucket.records, { flat: false });
+    const chartY = y + labelH + 5;
+    const chartH = Math.max(1, h - labelH - 9);
+    if (chartH >= 6) {
+      drawRecords(ctx, {
+        x: x + 5,
+        y: chartY,
+        w: Math.max(1, w - 10),
+        h: chartH
+      }, bucket.records, { flat: false, signedBars: false });
+    }
   }
 
   ctx.restore();
@@ -2311,18 +2400,21 @@ function drawWorkerLane(ctx, x, y, w, h, op, lanePhase) {
   const records = op.records || [];
   const hasBins = Boolean(op.active?.bins);
   const hasDetailLine = op.active?.tinyTier || op.active?.tupleKind || op.active?.reverseKind;
-  const preferredChartY = hasDetailLine ? y + 50 : y + 38;
   const chartBottom = y + h - 8;
-  const chartY = Math.min(preferredChartY, Math.max(y + 34, chartBottom - 36));
+  const chartY = hasDetailLine ? y + 58 : y + 42;
   const chartH = Math.max(1, chartBottom - chartY);
-
-  if (!hasBins) {
-    drawRecords(ctx, { x: x + 8, y: chartY, w: Math.max(1, w - 16), h: chartH }, records, { flat: false });
+  if (chartH < 10) {
     ctx.restore();
     return;
   }
 
-  drawRecords(ctx, { x: x + 8, y: chartY, w: Math.max(1, w * 0.34), h: chartH }, records, { flat: false });
+  if (!hasBins) {
+    drawRecords(ctx, { x: x + 8, y: chartY, w: Math.max(1, w - 16), h: chartH }, records, { flat: false, signedBars: false });
+    ctx.restore();
+    return;
+  }
+
+  drawRecords(ctx, { x: x + 8, y: chartY, w: Math.max(1, w * 0.34), h: chartH }, records, { flat: false, signedBars: false });
 
   const bins = compactBins(op.active.bins, Math.max(3, Math.floor((w * 0.56) / 16)));
   const binX = x + w * 0.4;
@@ -2335,7 +2427,7 @@ function drawWorkerLane(ctx, x, y, w, h, op, lanePhase) {
       ? tinyColor(op.active.tinyProfile, 0.8)
       : lanePhase === "tuple" ? routeColor("tuple-direct", 0.8) : routeColor("lsd-tuple-tail", 0.75);
     ctx.strokeRect(bx, binY, Math.max(2, binW - 2), binH);
-    drawRecords(ctx, { x: bx + 1, y: binY + 1, w: Math.max(1, binW - 4), h: Math.max(1, binH - 2) }, bins[i].records, { flat: false });
+    drawRecords(ctx, { x: bx + 1, y: binY + 1, w: Math.max(1, binW - 4), h: Math.max(1, binH - 2) }, bins[i].records, { flat: false, signedBars: false });
   }
   ctx.restore();
 }
@@ -2507,7 +2599,7 @@ function renderLabels() {
 
   set("status", step ? `${state.stepIndex + 1}/${state.steps.length} - ${step.status}` : "Ready");
   set("msdLabel", plan
-    ? `shift ${plan.msdShift}, ${plan.sizes.filter(Boolean).length}/${1 << cfg.msdBits} non-empty, ${plan.scatterWorkers || cfg.workers} parallel read lanes | ${bucketOrderSummary(plan, cfg)}`
+    ? `${keyOrderLabel(cfg)} order | shift ${plan.msdShift}, ${plan.sizes.filter(Boolean).length}/${1 << cfg.msdBits} non-empty, ${plan.scatterWorkers || cfg.workers} parallel read lanes | ${bucketOrderSummary(plan, cfg)}`
     : `skipped by global ${state.inputOrder} fast path`);
   set("lsdLabel", plan ? `${buildLsdWorkBucketsByDescendingSize(plan, cfg).filter(b => plan.cycleCounts[b] > 0).length} cycle buckets` : "skipped");
   set("tinyLabel", tinyBucketProfileSummary(plan, cfg));
@@ -2590,7 +2682,7 @@ function updateDynamicCanvasLayout() {
   const bucketWidth = bucketCanvas?.clientWidth || 1400;
   const bucketCols = Math.max(1, Math.floor((bucketWidth - 24) / 156));
   const bucketRows = Math.ceil(bucketVisible / bucketCols);
-  setCanvasHeight("bucketCanvas", clampNumber(78 + bucketRows * 64, 150, 920));
+  setCanvasHeight("bucketCanvas", clampNumber(80 + bucketRows * 78, 150, 980));
 
   setWorkCanvasHeight("tinyCanvas", "tiny");
   if (state.cfg.tuplesEnabled) setWorkCanvasHeight("tuplesCanvas", "tuple");
@@ -2689,6 +2781,7 @@ function wireDom() {
 
   bindValue("recordCount", "count", Number);
   bindValue("dataMode", "mode", String);
+  bindChecked("signedKeys", "signedKeys");
   bindValue("msdBits", "msdBits", Number);
   bindValue("lsdBits", "lsdBits", Number);
   bindValue("workerCount", "workers", Number);

@@ -43,9 +43,7 @@ public class msdbucketplan {
 	        public        final int[][] cycleShifts;
 	        public     final int[][] cycleMasks;
 	        public    final long[][] cycleBitMasks;
-	        public    final long[][] cycleTuplePlans;
 	        public    final long[] tupleTailMasks;
-	        public   final long[] tupleTailPlans;
 	        public     final boolean[][] localAscending;
 	        public     final boolean[][] localDescending;
 
@@ -70,9 +68,7 @@ public class msdbucketplan {
 	            cycleShifts = new int[cfg.msdBucketCount][];
 	            cycleMasks = new int[cfg.msdBucketCount][];
 	            cycleBitMasks = new long[cfg.msdBucketCount][];
-	            cycleTuplePlans = new long[cfg.msdBucketCount][];
 	            tupleTailMasks = new long[cfg.msdBucketCount];
-	            tupleTailPlans = new long[cfg.msdBucketCount];
 	            localAscending = new boolean[cfg.msdBucketCount][];
 	            localDescending = new boolean[cfg.msdBucketCount][];
 
@@ -95,7 +91,6 @@ public class msdbucketplan {
 	        int[] tempCycleShifts = new int[64];
 	        int[] tempCycleMasks = new int[64];
 	        long[] tempCycleBitMasks = new long[64];
-	        long[] tempCycleTuplePlans = new long[64];
 
 	        for (int b = 0; b < cfg.msdBucketCount; b++) {
 	            plan.starts[b] = pos;
@@ -153,7 +148,6 @@ public class msdbucketplan {
 
 	                if (tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
 	                    plan.tupleTailMasks[b] = variableMask;
-	                    plan.tupleTailPlans[b] = tuples.buildSmallTuplePlan(variableMask);
 	                } else {
 	                    int cycles = lsdbucketplan.buildLsdCyclePlan(
 	                            variableMask,
@@ -162,8 +156,7 @@ public class msdbucketplan {
 	                            size,
 	                            tempCycleShifts,
 	                            tempCycleMasks,
-	                            tempCycleBitMasks,
-	                            tempCycleTuplePlans
+	                            tempCycleBitMasks
 	                    );
 
 	                    if (cycles == 0) {
@@ -184,13 +177,11 @@ public class msdbucketplan {
 
 	                        plan.cycleCounts[b] = plannedCycles;
 	                        plan.tupleTailMasks[b] = tupleTailMask;
-	                        plan.tupleTailPlans[b] = tuples.buildSmallTuplePlan(tupleTailMask);
 
 	                        if (plannedCycles > 0) {
 	                            plan.cycleShifts[b] = Arrays.copyOf(tempCycleShifts, plannedCycles);
 	                            plan.cycleMasks[b] = Arrays.copyOf(tempCycleMasks, plannedCycles);
 	                            plan.cycleBitMasks[b] = Arrays.copyOf(tempCycleBitMasks, plannedCycles);
-	                            plan.cycleTuplePlans[b] = Arrays.copyOf(tempCycleTuplePlans, plannedCycles);
 	                        }
 	                    }
 	                }
@@ -272,7 +263,7 @@ public class msdbucketplan {
 	            }
 
 	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, result.firstKeys[t]);
+	                int cmp = tools.compareKeys(previousLast, result.firstKeys[t]);
 	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
 	                    return false;
 	                }
@@ -303,7 +294,7 @@ public class msdbucketplan {
 	            }
 
 	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, result.bucketFirstKeys[t][bucket]);
+	                int cmp = tools.compareKeys(previousLast, result.bucketFirstKeys[t][bucket]);
 	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
 	                    return false;
 	                }
@@ -327,9 +318,10 @@ public class msdbucketplan {
 
 	        int[] candidateBucketsTemp = new int[cfg.msdBucketCount];
 	        int candidateCount = 0;
+	        boolean sparseParentPlan = sparseParentPlan(plan, cfg);
 
 	        for (int b = 0; b < cfg.msdBucketCount; b++) {
-	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b);
+	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, sparseParentPlan);
 	            if (localShift >= 0) {
 	                candidateBucketsTemp[candidateCount++] = b;
 	            }
@@ -345,7 +337,7 @@ public class msdbucketplan {
 
 	        for (int i = 0; i < candidateCount; i++) {
 	            int b = candidateBucketsTemp[i];
-	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, localBits);
+	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, localBits, sparseParentPlan);
 	            if (localShift >= 0) {
 	                candidateIndexByBucket[b] = filteredCandidateCount;
 	                candidateBucketsTemp[filteredCandidateCount++] = b;
@@ -388,6 +380,7 @@ public class msdbucketplan {
 	            final int tid = t;
 
 	            futures.add(Apex.POOL.submit(() -> {
+	                long keyOrderXor = Apex.KEY_ORDER_XOR;
 	                long s = tid * chunk;
 	                long e = (tid == Apex.THREADS - 1) ? n : s + chunk;
 	                long p = s << 4;
@@ -400,14 +393,14 @@ public class msdbucketplan {
 	                    long k2 = src.get(Apex.LONG, p + 32);
 	                    long k3 = src.get(Apex.LONG, p + 48);
 
-	                    int parent0 = (int) ((k0 >>> plan.msdShift) & bucketMask);
-	                    int parent1 = (int) ((k1 >>> plan.msdShift) & bucketMask);
-	                    int parent2 = (int) ((k2 >>> plan.msdShift) & bucketMask);
-	                    int parent3 = (int) ((k3 >>> plan.msdShift) & bucketMask);
+	                    int parent0 = (int) (((k0 ^ keyOrderXor) >>> plan.msdShift) & bucketMask);
+	                    int parent1 = (int) (((k1 ^ keyOrderXor) >>> plan.msdShift) & bucketMask);
+	                    int parent2 = (int) (((k2 ^ keyOrderXor) >>> plan.msdShift) & bucketMask);
+	                    int parent3 = (int) (((k3 ^ keyOrderXor) >>> plan.msdShift) & bucketMask);
 
 	                    int candidateIndex0 = candidateIndexByBucket[parent0];
 	                    if (candidateIndex0 >= 0) {
-	                        int child = (int) ((k0 >>> plan.localMsdShifts[parent0]) & localBucketMask);
+	                        int child = (int) (((k0 ^ keyOrderXor) >>> plan.localMsdShifts[parent0]) & localBucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex0;
 	                        recordLocalOrder(k0, child, childFirstKeys[row], childLastKeys[row],
 	                                childSawKeys[row], childAscending[row], childDescending[row]);
@@ -418,7 +411,7 @@ public class msdbucketplan {
 
 	                    int candidateIndex1 = candidateIndexByBucket[parent1];
 	                    if (candidateIndex1 >= 0) {
-	                        int child = (int) ((k1 >>> plan.localMsdShifts[parent1]) & localBucketMask);
+	                        int child = (int) (((k1 ^ keyOrderXor) >>> plan.localMsdShifts[parent1]) & localBucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex1;
 	                        recordLocalOrder(k1, child, childFirstKeys[row], childLastKeys[row],
 	                                childSawKeys[row], childAscending[row], childDescending[row]);
@@ -429,7 +422,7 @@ public class msdbucketplan {
 
 	                    int candidateIndex2 = candidateIndexByBucket[parent2];
 	                    if (candidateIndex2 >= 0) {
-	                        int child = (int) ((k2 >>> plan.localMsdShifts[parent2]) & localBucketMask);
+	                        int child = (int) (((k2 ^ keyOrderXor) >>> plan.localMsdShifts[parent2]) & localBucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex2;
 	                        recordLocalOrder(k2, child, childFirstKeys[row], childLastKeys[row],
 	                                childSawKeys[row], childAscending[row], childDescending[row]);
@@ -440,7 +433,7 @@ public class msdbucketplan {
 
 	                    int candidateIndex3 = candidateIndexByBucket[parent3];
 	                    if (candidateIndex3 >= 0) {
-	                        int child = (int) ((k3 >>> plan.localMsdShifts[parent3]) & localBucketMask);
+	                        int child = (int) (((k3 ^ keyOrderXor) >>> plan.localMsdShifts[parent3]) & localBucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex3;
 	                        recordLocalOrder(k3, child, childFirstKeys[row], childLastKeys[row],
 	                                childSawKeys[row], childAscending[row], childDescending[row]);
@@ -454,11 +447,11 @@ public class msdbucketplan {
 
 	                while (p < end) {
 	                    long k = src.get(Apex.LONG, p);
-	                    int parent = (int) ((k >>> plan.msdShift) & bucketMask);
+	                    int parent = (int) (((k ^ keyOrderXor) >>> plan.msdShift) & bucketMask);
 	                    int candidateIndex = candidateIndexByBucket[parent];
 
 	                    if (candidateIndex >= 0) {
-	                        int child = (int) ((k >>> plan.localMsdShifts[parent]) & localBucketMask);
+	                        int child = (int) (((k ^ keyOrderXor) >>> plan.localMsdShifts[parent]) & localBucketMask);
 	                        int row = (tid * localCandidateCount) + candidateIndex;
 
 	                        recordLocalOrder(k, child, childFirstKeys[row], childLastKeys[row],
@@ -538,6 +531,17 @@ public class msdbucketplan {
 	        plan.localMsdAttachSeconds += (System.nanoTime() - attachStart) / 1e9;
 	    }
 
+	  static boolean sparseParentPlan(MsdBucketPlan plan, Config cfg) {
+	        int nonEmpty = 0;
+	        for (int b = 0; b < cfg.msdBucketCount; b++) {
+	            if (plan.sizes[b] != 0) {
+	                nonEmpty++;
+	            }
+	        }
+
+	        return nonEmpty > 0 && nonEmpty <= Math.max(1, cfg.msdBucketCount >>> 3);
+	    }
+
 	  static void recordLocalOrder(
 	            long key,
 	            int bucket,
@@ -548,14 +552,17 @@ public class msdbucketplan {
 	            boolean[] descending
 	    ) {
 	        if (sawKeys[bucket]) {
-	            int cmp = Long.compareUnsigned(lastKeys[bucket], key);
-	            ascending[bucket] &= cmp <= 0;
-	            descending[bucket] &= cmp >= 0;
+	            if (ascending[bucket] || descending[bucket]) {
+	                int cmp = tools.compareKeys(lastKeys[bucket], key);
+	                ascending[bucket] &= cmp <= 0;
+	                descending[bucket] &= cmp >= 0;
+	                lastKeys[bucket] = key;
+	            }
 	        } else {
 	            firstKeys[bucket] = key;
 	            sawKeys[bucket] = true;
+	            lastKeys[bucket] = key;
 	        }
-	        lastKeys[bucket] = key;
 	    }
 
 	  static boolean localChildMonotonic(
@@ -582,7 +589,7 @@ public class msdbucketplan {
 	            }
 
 	            if (sawAny) {
-	                int cmp = Long.compareUnsigned(previousLast, childFirstKeys[row][child]);
+	                int cmp = tools.compareKeys(previousLast, childFirstKeys[row][child]);
 	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
 	                    return false;
 	                }

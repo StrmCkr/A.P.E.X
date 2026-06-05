@@ -1,20 +1,19 @@
 package Tuples;
 
 import java.lang.foreign.MemorySegment;
-import java.lang.foreign.ValueLayout;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.Future;
 
 import Tools.tools;
-import config.configurations.Config;
 import main.Apex;
 import main.Apex.Scratch;
 
 public class tuples {
     
     public static int directTupleRadixCap() {
-        return Apex.DIRECT_TUPLE_BITS <= 0 ? 1 : 1 << Apex.DIRECT_TUPLE_BITS;
+        int tupleBits = Math.max(Apex.DIRECT_TUPLE_BITS, Apex.DIRECT_TUPLE_CONTIGUOUS_BITS);
+        return tupleBits <= 0 ? 1 : 1 << tupleBits;
     }
 
     public static boolean tupleSpaceFitsDirectPass(long entropyMask) {
@@ -23,40 +22,58 @@ public class tuples {
     }
 
     public static boolean tupleSpaceFitsDirectPass(long entropyMask, int size) {
-        return tupleSpaceFitsDirectPass(entropyMask) && tupleRadix(entropyMask) <= size;
+        int tupleBits = Long.bitCount(entropyMask);
+        int maxTupleBits = Math.max(Apex.DIRECT_TUPLE_BITS, Apex.DIRECT_TUPLE_CONTIGUOUS_BITS);
+        if (tupleBits <= 1 || tupleBits > maxTupleBits) {
+            return false;
+        }
+
+        if ((1 << tupleBits) > size) {
+            return false;
+        }
+
+        if (tupleBits <= Apex.DIRECT_TUPLE_BITS) {
+            return true;
+        }
+
+        return tupleBits <= Apex.DIRECT_TUPLE_CONTIGUOUS_BITS &&
+                size <= Apex.MAX_HEAP_SCRATCH_RECORDS &&
+                tupleShift(entropyMask) >= 0;
+    }
+
+    public static boolean directTupleUsesInPlace(int size) {
+        return directTupleUsesInPlace(size, false);
+    }
+
+    public static boolean directTupleUsesInPlace(int size, boolean preferInPlace) {
+        return preferInPlace || size <= Apex.DIRECT_TUPLE_IN_PLACE_MAX_RECORDS;
+    }
+
+    public static boolean directTupleUsesInPlace(
+            MemorySegment scratch,
+            MemorySegment dst,
+            int size,
+            boolean checkOrder,
+            boolean preferInPlace
+    ) {
+        return checkOrder || scratch == dst || directTupleUsesInPlace(size, preferInPlace);
     }
 
     public static int tupleRadix(long entropyMask) {
         return 1 << Long.bitCount(entropyMask);
     }
 
-    public static long buildSmallTuplePlan(long entropyMask) {
-        int tupleBits = Long.bitCount(entropyMask);
-
-        if (tupleBits <= 1 || tupleBits > Apex.SMALL_TUPLE_LOOKUP_BITS) {
-            return 0L;
-        }
-
-        long plan = tupleBits;
-        int outShift = 4;
-
-        while (entropyMask != 0L) {
-            long bit = entropyMask & -entropyMask;
-            plan |= (long) Long.numberOfTrailingZeros(bit) << outShift;
-            entropyMask ^= bit;
-            outShift += 6;
-        }
-
-        return plan;
-    }
-
     /**
      * 🚀 Hardware-Accelerated Tuple Index Extraction.
      * Capitalizes on JDK 25 BMI2 intrinsics to route straight to the single-cycle native PEXT instruction.
      */
-    public static int tupleIndex(long key, long entropyMask, long smallTuplePlan) {
+    public static int tupleIndex(long key, long entropyMask) {
         // Under JDK 25, Long.compress maps directly to raw CPU hardware silicon pipelines
-        return (int) Long.compress(key, entropyMask);
+        return (int) Long.compress(key ^ Apex.KEY_ORDER_XOR, entropyMask);
+    }
+
+    public static int tupleShift(long entropyMask) {
+        return contiguousShift(entropyMask);
     }
 
     public static long tupleTailMaskAfterPrefix(long variableMask, long[] cycleBitMasks, int prefix) {
@@ -80,10 +97,9 @@ public class tuples {
             long startPos,
             int size,
             Apex.Scratch sc,
-            long entropyMask,
-            long smallTuplePlan
+            long entropyMask
     ) {
-        return tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc, entropyMask, smallTuplePlan, true);
+        return tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc, entropyMask, true);
     }
 
     public static boolean tryDirectTupleSpaceSort(
@@ -93,17 +109,29 @@ public class tuples {
             int size,
             Apex.Scratch sc,
             long entropyMask,
-            long smallTuplePlan,
             boolean checkOrder
+    ) {
+        return tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc, entropyMask, checkOrder, false);
+    }
+
+    public static boolean tryDirectTupleSpaceSort(
+            MemorySegment scratch,
+            MemorySegment dst,
+            long startPos,
+            int size,
+            Apex.Scratch sc,
+            long entropyMask,
+            boolean checkOrder,
+            boolean preferInPlace
     ) {
         if (!tupleSpaceFitsDirectPass(entropyMask, size)) {
             return false;
         }
 
-        if (!checkOrder && size > Apex.MAX_HEAP_SCRATCH_RECORDS && scratch != dst) {
-            directTupleSpaceSortOffHeap(scratch, dst, startPos, size, sc, entropyMask, smallTuplePlan);
+        if (directTupleUsesInPlace(scratch, dst, size, checkOrder, preferInPlace)) {
+            directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, checkOrder);
         } else {
-            directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, smallTuplePlan, checkOrder);
+            directTupleSpaceSortOffHeap(scratch, dst, startPos, size, sc, entropyMask);
         }
 
         return true;
@@ -114,10 +142,9 @@ public class tuples {
             long startPos,
             int size,
             Scratch sc,
-            long entropyMask,
-            long smallTuplePlan
+            long entropyMask
     ) {
-        directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, smallTuplePlan, true);
+        directTupleSpaceSortHeap(dst, startPos, size, sc, entropyMask, true);
     }
 
     public static void directTupleSpaceSortHeap(
@@ -126,7 +153,6 @@ public class tuples {
             int size,
             Scratch sc,
             long entropyMask,
-            long smallTuplePlan,
             boolean checkOrder
     ) {
         int radix = tupleRadix(entropyMask);
@@ -142,18 +168,35 @@ public class tuples {
         boolean ascending = true;
         boolean descending = true;
         long previous = 0L;
+        int tupleShift = tupleShift(entropyMask);
+        int tupleMask = radix - 1;
+        long keyOrderXor = Apex.KEY_ORDER_XOR;
         Arrays.fill(counts, 0, radix, 0);
 
-        for (int i = 0; i < size; i++) {
-            long key = dst.get(Apex.LONG, p);
-            counts[(int) Long.compress(key, entropyMask)]++;
-            if (checkOrder && (ascending || descending) && i > 0) {
-                int cmp = Long.compareUnsigned(previous, key);
-                ascending &= cmp <= 0;
-                descending &= cmp >= 0;
+        if (tupleShift >= 0) {
+            for (int i = 0; i < size; i++) {
+                long key = dst.get(Apex.LONG, p);
+                counts[(int) (((key ^ keyOrderXor) >>> tupleShift) & tupleMask)]++;
+                if (checkOrder && (ascending || descending) && i > 0) {
+                    int cmp = tools.compareKeys(previous, key);
+                    ascending &= cmp <= 0;
+                    descending &= cmp >= 0;
+                }
+                previous = key;
+                p += Apex.RECORD_BYTES;
             }
-            previous = key;
-            p += Apex.RECORD_BYTES;
+        } else {
+            for (int i = 0; i < size; i++) {
+                long key = dst.get(Apex.LONG, p);
+                counts[(int) Long.compress(key ^ keyOrderXor, entropyMask)]++;
+                if (checkOrder && (ascending || descending) && i > 0) {
+                    int cmp = tools.compareKeys(previous, key);
+                    ascending &= cmp <= 0;
+                    descending &= cmp >= 0;
+                }
+                previous = key;
+                p += Apex.RECORD_BYTES;
+            }
         }
 
         if (checkOrder) {
@@ -176,32 +219,63 @@ public class tuples {
             ends[bin] = sum;
         }
 
-        for (int bin = 0; bin < radix; bin++) {
-            int i = offsets[bin];
-            int end = ends[bin];
+        if (tupleShift >= 0) {
+            for (int bin = 0; bin < radix; bin++) {
+                int i = offsets[bin];
+                int end = ends[bin];
 
-            while (i < end) {
-                long recordOffset = base + ((long) i << 4);
-                long key = dst.get(Apex.LONG, recordOffset);
-                int targetBin = (int) Long.compress(key, entropyMask);
+                while (i < end) {
+                    long recordOffset = base + ((long) i << 4);
+                    long key = dst.get(Apex.LONG, recordOffset);
+                    int targetBin = (int) (((key ^ keyOrderXor) >>> tupleShift) & tupleMask);
 
-                if (targetBin == bin) {
-                    i++;
-                    offsets[bin] = i;
-                    continue;
+                    if (targetBin == bin) {
+                        i++;
+                        offsets[bin] = i;
+                        continue;
+                    }
+
+                    int targetIndex = offsets[targetBin]++;
+                    long targetOffset = base + ((long) targetIndex << 4);
+
+                    long value = dst.get(Apex.LONG, recordOffset + 8);
+                    long targetKey = dst.get(Apex.LONG, targetOffset);
+                    long targetValue = dst.get(Apex.LONG, targetOffset + 8);
+
+                    dst.set(Apex.LONG, targetOffset, key);
+                    dst.set(Apex.LONG, targetOffset + 8, value);
+                    dst.set(Apex.LONG, recordOffset, targetKey);
+                    dst.set(Apex.LONG, recordOffset + 8, targetValue);
                 }
+            }
+        } else {
+            for (int bin = 0; bin < radix; bin++) {
+                int i = offsets[bin];
+                int end = ends[bin];
 
-                int targetIndex = offsets[targetBin]++;
-                long targetOffset = base + ((long) targetIndex << 4);
+                while (i < end) {
+                    long recordOffset = base + ((long) i << 4);
+                    long key = dst.get(Apex.LONG, recordOffset);
+                    int targetBin = (int) Long.compress(key ^ keyOrderXor, entropyMask);
 
-                long value = dst.get(Apex.LONG, recordOffset + 8);
-                long targetKey = dst.get(Apex.LONG, targetOffset);
-                long targetValue = dst.get(Apex.LONG, targetOffset + 8);
+                    if (targetBin == bin) {
+                        i++;
+                        offsets[bin] = i;
+                        continue;
+                    }
 
-                dst.set(Apex.LONG, targetOffset, key);
-                dst.set(Apex.LONG, targetOffset + 8, value);
-                dst.set(Apex.LONG, recordOffset, targetKey);
-                dst.set(Apex.LONG, recordOffset + 8, targetValue);
+                    int targetIndex = offsets[targetBin]++;
+                    long targetOffset = base + ((long) targetIndex << 4);
+
+                    long value = dst.get(Apex.LONG, recordOffset + 8);
+                    long targetKey = dst.get(Apex.LONG, targetOffset);
+                    long targetValue = dst.get(Apex.LONG, targetOffset + 8);
+
+                    dst.set(Apex.LONG, targetOffset, key);
+                    dst.set(Apex.LONG, targetOffset + 8, value);
+                    dst.set(Apex.LONG, recordOffset, targetKey);
+                    dst.set(Apex.LONG, recordOffset + 8, targetValue);
+                }
             }
         }
     }
@@ -212,8 +286,7 @@ public class tuples {
             long startPos,
             int size,
             Scratch sc,
-            long entropyMask,
-            long smallTuplePlan
+            long entropyMask
     ) {
         try {
             Apex.LARGE_PARTITION_PERMITS.acquire();
@@ -225,6 +298,7 @@ public class tuples {
         try {
             int radix = tupleRadix(entropyMask);
             long dstBase = startPos << 4;
+            int tupleShift = tupleShift(entropyMask);
 
             try {
                 parallelTupleCountingPassSegments(
@@ -233,10 +307,9 @@ public class tuples {
                         scratch,
                         dstBase,
                         size,
-                        -1,
+                        tupleShift,
                         radix - 1,
-                        entropyMask,
-                        smallTuplePlan
+                        entropyMask
                 );
             } catch (Exception e) {
                 throw new RuntimeException("Parallel direct tuple off-heap pass failed", e);
@@ -252,31 +325,12 @@ public class tuples {
         }
     }    
 
-    public static int buildPackedTupleLsdCyclePlan(
-            long variableMask,
-            Config cfg,
-            int[] cycleShifts,
-            int[] cycleMasks,
-            long[] cycleBitMasks,
-            long[] cycleTuplePlans
-    ) {
-        return buildPackedTupleCyclePlan(
-                variableMask,
-                cfg.lsdBits,
-                cycleShifts,
-                cycleMasks,
-                cycleBitMasks,
-                cycleTuplePlans
-        );
-    }
-
     public static int buildPackedTupleCyclePlan(
             long variableMask,
             int bitsPerCycle,
             int[] cycleShifts,
             int[] cycleMasks,
-            long[] cycleBitMasks,
-            long[] cycleTuplePlans
+            long[] cycleBitMasks
     ) {
         int cycles = 0;
         int bitsInCycle = 0;
@@ -293,7 +347,6 @@ public class tuples {
                 cycleBitMasks[cycles] = bitMask;
                 cycleMasks[cycles] = tools.lowIntMask(bitsInCycle);
                 cycleShifts[cycles] = contiguousShift(bitMask);
-                cycleTuplePlans[cycles] = cycleShifts[cycles] < 0 ? buildSmallTuplePlan(bitMask) : 0L;
                 cycles++;
 
                 bitMask = 0L;
@@ -336,16 +389,25 @@ public class tuples {
             long[] nextValues,
             int size,
             Scratch sc,
-            long entropyMask,
-            long smallTuplePlan
+            long entropyMask
     ) {
         int radix = tuples.tupleRadix(entropyMask);
         sc.ensureCounts(radix);
         Arrays.fill(sc.counts, 0, radix, 0);
+        int tupleShift = tupleShift(entropyMask);
+        int tupleMask = radix - 1;
+        long keyOrderXor = Apex.KEY_ORDER_XOR;
 
-        for (int i = 0; i < size; i++) {
-            int bin = (int) Long.compress(currentKeys[i], entropyMask);
-            sc.counts[bin]++;
+        if (tupleShift >= 0) {
+            for (int i = 0; i < size; i++) {
+                int bin = (int) (((currentKeys[i] ^ keyOrderXor) >>> tupleShift) & tupleMask);
+                sc.counts[bin]++;
+            }
+        } else {
+            for (int i = 0; i < size; i++) {
+                int bin = (int) Long.compress(currentKeys[i] ^ keyOrderXor, entropyMask);
+                sc.counts[bin]++;
+            }
         }
 
         int sum = 0;
@@ -355,12 +417,22 @@ public class tuples {
             sum += c;
         }
 
-        for (int i = 0; i < size; i++) {
-            long k = currentKeys[i];
-            int bin = (int) Long.compress(k, entropyMask);
-            int pos = sc.counts[bin]++;
-            nextKeys[pos] = k;
-            nextValues[pos] = currentValues[i];
+        if (tupleShift >= 0) {
+            for (int i = 0; i < size; i++) {
+                long k = currentKeys[i];
+                int bin = (int) (((k ^ keyOrderXor) >>> tupleShift) & tupleMask);
+                int pos = sc.counts[bin]++;
+                nextKeys[pos] = k;
+                nextValues[pos] = currentValues[i];
+            }
+        } else {
+            for (int i = 0; i < size; i++) {
+                long k = currentKeys[i];
+                int bin = (int) Long.compress(k ^ keyOrderXor, entropyMask);
+                int pos = sc.counts[bin]++;
+                nextKeys[pos] = k;
+                nextValues[pos] = currentValues[i];
+            }
         }
     }
 
@@ -371,11 +443,10 @@ public class tuples {
             long targetBase,
             int size,
             int[] counts,
-            long entropyMask,
-            long smallTuplePlan
+            long entropyMask
     ) {
         tupleCountingPassSegments(source, sourceBase, target, targetBase, size, counts,
-                -1, tuples.tupleRadix(entropyMask) - 1, entropyMask, smallTuplePlan);
+                tupleShift(entropyMask), tuples.tupleRadix(entropyMask) - 1, entropyMask);
     }
 
     public static void tupleCountingPassSegments(
@@ -387,8 +458,7 @@ public class tuples {
             int[] counts,
             int shift,
             int mask,
-            long bitMask,
-            long smallTuplePlan
+            long bitMask
     ) {
         int radixThisPass = mask + 1;
         Arrays.fill(counts, 0, radixThisPass, 0);
@@ -396,6 +466,7 @@ public class tuples {
         long p = sourceBase;
         long end = sourceBase + ((long) size << 4);
         long unrolledEnd = end - (4L * Apex.RECORD_BYTES);
+        long keyOrderXor = Apex.KEY_ORDER_XOR;
 
         // --- 🚀 Stride-Unrolled Counting Staged to Saturate L1 Caches ---
         if (shift >= 0) {
@@ -405,17 +476,17 @@ public class tuples {
                 long k2 = source.get(Apex.LONG, p + 32);
                 long k3 = source.get(Apex.LONG, p + 48);
 
-                counts[(int) ((k0 >>> shift) & mask)]++;
-                counts[(int) ((k1 >>> shift) & mask)]++;
-                counts[(int) ((k2 >>> shift) & mask)]++;
-                counts[(int) ((k3 >>> shift) & mask)]++;
+                counts[(int) (((k0 ^ keyOrderXor) >>> shift) & mask)]++;
+                counts[(int) (((k1 ^ keyOrderXor) >>> shift) & mask)]++;
+                counts[(int) (((k2 ^ keyOrderXor) >>> shift) & mask)]++;
+                counts[(int) (((k3 ^ keyOrderXor) >>> shift) & mask)]++;
 
                 p += 4L * Apex.RECORD_BYTES;
             }
 
             while (p < end) {
                 long k = source.get(Apex.LONG, p);
-                counts[(int) ((k >>> shift) & mask)]++;
+                counts[(int) (((k ^ keyOrderXor) >>> shift) & mask)]++;
                 p += Apex.RECORD_BYTES;
             }
         } else {
@@ -425,17 +496,17 @@ public class tuples {
                 long k2 = source.get(Apex.LONG, p + 32);
                 long k3 = source.get(Apex.LONG, p + 48);
 
-                counts[(int) Long.compress(k0, bitMask)]++;
-                counts[(int) Long.compress(k1, bitMask)]++;
-                counts[(int) Long.compress(k2, bitMask)]++;
-                counts[(int) Long.compress(k3, bitMask)]++;
+                counts[(int) Long.compress(k0 ^ keyOrderXor, bitMask)]++;
+                counts[(int) Long.compress(k1 ^ keyOrderXor, bitMask)]++;
+                counts[(int) Long.compress(k2 ^ keyOrderXor, bitMask)]++;
+                counts[(int) Long.compress(k3 ^ keyOrderXor, bitMask)]++;
 
                 p += 4L * Apex.RECORD_BYTES;
             }
 
             while (p < end) {
                 long k = source.get(Apex.LONG, p);
-                counts[(int) Long.compress(k, bitMask)]++;
+                counts[(int) Long.compress(k ^ keyOrderXor, bitMask)]++;
                 p += Apex.RECORD_BYTES;
             }
         }
@@ -461,22 +532,22 @@ public class tuples {
                 long k3 = source.get(Apex.LONG, p + 48);
                 long v3 = source.get(Apex.LONG, p + 56);
 
-                int bin0 = (int) ((k0 >>> shift) & mask);
+                int bin0 = (int) (((k0 ^ keyOrderXor) >>> shift) & mask);
                 long targetPos0 = targetBase + ((long) counts[bin0]++ << 4);
                 target.set(Apex.LONG, targetPos0, k0);
                 target.set(Apex.LONG, targetPos0 + 8, v0);
 
-                int bin1 = (int) ((k1 >>> shift) & mask);
+                int bin1 = (int) (((k1 ^ keyOrderXor) >>> shift) & mask);
                 long targetPos1 = targetBase + ((long) counts[bin1]++ << 4);
                 target.set(Apex.LONG, targetPos1, k1);
                 target.set(Apex.LONG, targetPos1 + 8, v1);
 
-                int bin2 = (int) ((k2 >>> shift) & mask);
+                int bin2 = (int) (((k2 ^ keyOrderXor) >>> shift) & mask);
                 long targetPos2 = targetBase + ((long) counts[bin2]++ << 4);
                 target.set(Apex.LONG, targetPos2, k2);
                 target.set(Apex.LONG, targetPos2 + 8, v2);
 
-                int bin3 = (int) ((k3 >>> shift) & mask);
+                int bin3 = (int) (((k3 ^ keyOrderXor) >>> shift) & mask);
                 long targetPos3 = targetBase + ((long) counts[bin3]++ << 4);
                 target.set(Apex.LONG, targetPos3, k3);
                 target.set(Apex.LONG, targetPos3 + 8, v3);
@@ -488,7 +559,7 @@ public class tuples {
                 long k = source.get(Apex.LONG, p);
                 long v = source.get(Apex.LONG, p + 8);
 
-                int bin = (int) ((k >>> shift) & mask);
+                int bin = (int) (((k ^ keyOrderXor) >>> shift) & mask);
                 long targetPos = targetBase + ((long) counts[bin]++ << 4);
 
                 target.set(Apex.LONG, targetPos, k);
@@ -506,22 +577,22 @@ public class tuples {
                 long k3 = source.get(Apex.LONG, p + 48);
                 long v3 = source.get(Apex.LONG, p + 56);
 
-                int bin0 = (int) Long.compress(k0, bitMask);
+                int bin0 = (int) Long.compress(k0 ^ keyOrderXor, bitMask);
                 long targetPos0 = targetBase + ((long) counts[bin0]++ << 4);
                 target.set(Apex.LONG, targetPos0, k0);
                 target.set(Apex.LONG, targetPos0 + 8, v0);
 
-                int bin1 = (int) Long.compress(k1, bitMask);
+                int bin1 = (int) Long.compress(k1 ^ keyOrderXor, bitMask);
                 long targetPos1 = targetBase + ((long) counts[bin1]++ << 4);
                 target.set(Apex.LONG, targetPos1, k1);
                 target.set(Apex.LONG, targetPos1 + 8, v1);
 
-                int bin2 = (int) Long.compress(k2, bitMask);
+                int bin2 = (int) Long.compress(k2 ^ keyOrderXor, bitMask);
                 long targetPos2 = targetBase + ((long) counts[bin2]++ << 4);
                 target.set(Apex.LONG, targetPos2, k2);
                 target.set(Apex.LONG, targetPos2 + 8, v2);
 
-                int bin3 = (int) Long.compress(k3, bitMask);
+                int bin3 = (int) Long.compress(k3 ^ keyOrderXor, bitMask);
                 long targetPos3 = targetBase + ((long) counts[bin3]++ << 4);
                 target.set(Apex.LONG, targetPos3, k3);
                 target.set(Apex.LONG, targetPos3 + 8, v3);
@@ -533,7 +604,7 @@ public class tuples {
                 long k = source.get(Apex.LONG, p);
                 long v = source.get(Apex.LONG, p + 8);
 
-                int bin = (int) Long.compress(k, bitMask);
+                int bin = (int) Long.compress(k ^ keyOrderXor, bitMask);
                 long targetPos = targetBase + ((long) counts[bin]++ << 4);
 
                 target.set(Apex.LONG, targetPos, k);
@@ -551,8 +622,7 @@ public class tuples {
             int size,
             int shift,
             int mask,
-            long bitMask,
-            long smallTuplePlan
+            long bitMask
     ) throws Exception {
         int radixThisPass = mask + 1;
         int[][] threadOffsets = new int[Apex.THREADS][radixThisPass];
@@ -568,6 +638,7 @@ public class tuples {
                 long p = sourceBase + ((long) start << 4);
                 long limit = sourceBase + ((long) end << 4);
                 long unrolledLimit = limit - (4L * Apex.RECORD_BYTES);
+                long keyOrderXor = Apex.KEY_ORDER_XOR;
 
                 if (shift >= 0) {
                     while (p <= unrolledLimit) {
@@ -576,16 +647,16 @@ public class tuples {
                         long k2 = source.get(Apex.LONG, p + 32);
                         long k3 = source.get(Apex.LONG, p + 48);
 
-                        counts[(int) ((k0 >>> shift) & mask)]++;
-                        counts[(int) ((k1 >>> shift) & mask)]++;
-                        counts[(int) ((k2 >>> shift) & mask)]++;
-                        counts[(int) ((k3 >>> shift) & mask)]++;
+                        counts[(int) (((k0 ^ keyOrderXor) >>> shift) & mask)]++;
+                        counts[(int) (((k1 ^ keyOrderXor) >>> shift) & mask)]++;
+                        counts[(int) (((k2 ^ keyOrderXor) >>> shift) & mask)]++;
+                        counts[(int) (((k3 ^ keyOrderXor) >>> shift) & mask)]++;
                         p += 4L * Apex.RECORD_BYTES;
                     }
 
                     while (p < limit) {
                         long k = source.get(Apex.LONG, p);
-                        counts[(int) ((k >>> shift) & mask)]++;
+                        counts[(int) (((k ^ keyOrderXor) >>> shift) & mask)]++;
                         p += Apex.RECORD_BYTES;
                     }
                 } else {
@@ -595,16 +666,16 @@ public class tuples {
                         long k2 = source.get(Apex.LONG, p + 32);
                         long k3 = source.get(Apex.LONG, p + 48);
 
-                        counts[(int) Long.compress(k0, bitMask)]++;
-                        counts[(int) Long.compress(k1, bitMask)]++;
-                        counts[(int) Long.compress(k2, bitMask)]++;
-                        counts[(int) Long.compress(k3, bitMask)]++;
+                        counts[(int) Long.compress(k0 ^ keyOrderXor, bitMask)]++;
+                        counts[(int) Long.compress(k1 ^ keyOrderXor, bitMask)]++;
+                        counts[(int) Long.compress(k2 ^ keyOrderXor, bitMask)]++;
+                        counts[(int) Long.compress(k3 ^ keyOrderXor, bitMask)]++;
                         p += 4L * Apex.RECORD_BYTES;
                     }
 
                     while (p < limit) {
                         long k = source.get(Apex.LONG, p);
-                        counts[(int) Long.compress(k, bitMask)]++;
+                        counts[(int) Long.compress(k ^ keyOrderXor, bitMask)]++;
                         p += Apex.RECORD_BYTES;
                     }
                 }
@@ -637,6 +708,7 @@ public class tuples {
                 long p = sourceBase + ((long) start << 4);
                 long limit = sourceBase + ((long) end << 4);
                 long unrolledLimit = limit - (4L * Apex.RECORD_BYTES);
+                long keyOrderXor = Apex.KEY_ORDER_XOR;
 
                 if (shift >= 0) {
                     while (p <= unrolledLimit) {
@@ -649,22 +721,22 @@ public class tuples {
                         long k3 = source.get(Apex.LONG, p + 48);
                         long v3 = source.get(Apex.LONG, p + 56);
 
-                        int bin0 = (int) ((k0 >>> shift) & mask);
+                        int bin0 = (int) (((k0 ^ keyOrderXor) >>> shift) & mask);
                         long targetPos0 = targetBase + ((long) offsets[bin0]++ << 4);
                         target.set(Apex.LONG, targetPos0, k0);
                         target.set(Apex.LONG, targetPos0 + 8, v0);
 
-                        int bin1 = (int) ((k1 >>> shift) & mask);
+                        int bin1 = (int) (((k1 ^ keyOrderXor) >>> shift) & mask);
                         long targetPos1 = targetBase + ((long) offsets[bin1]++ << 4);
                         target.set(Apex.LONG, targetPos1, k1);
                         target.set(Apex.LONG, targetPos1 + 8, v1);
 
-                        int bin2 = (int) ((k2 >>> shift) & mask);
+                        int bin2 = (int) (((k2 ^ keyOrderXor) >>> shift) & mask);
                         long targetPos2 = targetBase + ((long) offsets[bin2]++ << 4);
                         target.set(Apex.LONG, targetPos2, k2);
                         target.set(Apex.LONG, targetPos2 + 8, v2);
 
-                        int bin3 = (int) ((k3 >>> shift) & mask);
+                        int bin3 = (int) (((k3 ^ keyOrderXor) >>> shift) & mask);
                         long targetPos3 = targetBase + ((long) offsets[bin3]++ << 4);
                         target.set(Apex.LONG, targetPos3, k3);
                         target.set(Apex.LONG, targetPos3 + 8, v3);
@@ -674,7 +746,7 @@ public class tuples {
                     while (p < limit) {
                         long k = source.get(Apex.LONG, p);
                         long v = source.get(Apex.LONG, p + 8);
-                        int bin = (int) ((k >>> shift) & mask);
+                        int bin = (int) (((k ^ keyOrderXor) >>> shift) & mask);
                         long targetPos = targetBase + ((long) offsets[bin]++ << 4);
                         target.set(Apex.LONG, targetPos, k);
                         target.set(Apex.LONG, targetPos + 8, v);
@@ -691,22 +763,22 @@ public class tuples {
                         long k3 = source.get(Apex.LONG, p + 48);
                         long v3 = source.get(Apex.LONG, p + 56);
 
-                        int bin0 = (int) Long.compress(k0, bitMask);
+                        int bin0 = (int) Long.compress(k0 ^ keyOrderXor, bitMask);
                         long targetPos0 = targetBase + ((long) offsets[bin0]++ << 4);
                         target.set(Apex.LONG, targetPos0, k0);
                         target.set(Apex.LONG, targetPos0 + 8, v0);
 
-                        int bin1 = (int) Long.compress(k1, bitMask);
+                        int bin1 = (int) Long.compress(k1 ^ keyOrderXor, bitMask);
                         long targetPos1 = targetBase + ((long) offsets[bin1]++ << 4);
                         target.set(Apex.LONG, targetPos1, k1);
                         target.set(Apex.LONG, targetPos1 + 8, v1);
 
-                        int bin2 = (int) Long.compress(k2, bitMask);
+                        int bin2 = (int) Long.compress(k2 ^ keyOrderXor, bitMask);
                         long targetPos2 = targetBase + ((long) offsets[bin2]++ << 4);
                         target.set(Apex.LONG, targetPos2, k2);
                         target.set(Apex.LONG, targetPos2 + 8, v2);
 
-                        int bin3 = (int) Long.compress(k3, bitMask);
+                        int bin3 = (int) Long.compress(k3 ^ keyOrderXor, bitMask);
                         long targetPos3 = targetBase + ((long) offsets[bin3]++ << 4);
                         target.set(Apex.LONG, targetPos3, k3);
                         target.set(Apex.LONG, targetPos3 + 8, v3);
@@ -716,7 +788,7 @@ public class tuples {
                     while (p < limit) {
                         long k = source.get(Apex.LONG, p);
                         long v = source.get(Apex.LONG, p + 8);
-                        int bin = (int) Long.compress(k, bitMask);
+                        int bin = (int) Long.compress(k ^ keyOrderXor, bitMask);
                         long targetPos = targetBase + ((long) offsets[bin]++ << 4);
                         target.set(Apex.LONG, targetPos, k);
                         target.set(Apex.LONG, targetPos + 8, v);

@@ -8,7 +8,7 @@ algorithm execution model, see [operation-execution.md](operation-execution.md).
 
 The comparison harness is intended to answer three questions:
 
-- How does A.P.E.X. perform on large unsigned 64-bit key workloads?
+- How does A.P.E.X. perform on large 64-bit key workloads?
 - How does the record-sort path compare with key-only baselines?
 - How does performance change across different data topologies?
 
@@ -20,9 +20,13 @@ each run, and reports timing statistics across warmups and measured runs.
 A.P.E.X. sorts 16-byte records:
 
 ```text
-key:   unsigned 64-bit
+key:   raw 64-bit
 value: 64-bit payload
 ```
+
+Unsigned key order is the default. Pass `signed=true` or `keyOrder=signed` to
+compare signed `long` ordering; the harness applies the same selected order to
+A.P.E.X. verification and compatible baselines.
 
 Some baselines sort only `long[]` keys. Those are useful comparisons, but they
 are not the same workload as moving key/value records. When publishing results,
@@ -83,8 +87,8 @@ By default, `curated=true` runs the publication-friendly set:
 | --- | --- | --- |
 | `apex-records` | `record-sort` | Full A.P.E.X. key/value record pipeline |
 | `apex-keys` | `key-only` | A.P.E.X. pipeline with key-order verification |
-| `jdk-arrays-sort` | `key-only` | JDK `Arrays.sort` using unsigned transform |
-| `jdk-parallel-sort` | `key-only` | JDK `Arrays.parallelSort` using unsigned transform |
+| `jdk-arrays-sort` | `key-only` | JDK `Arrays.sort`, with unsigned transform when needed |
+| `jdk-parallel-sort` | `key-only` | JDK `Arrays.parallelSort`, with unsigned transform when needed |
 | `fastutil-parallel-radix` | `key-only` | Fastutil parallel radix sort |
 
 This set is a practical first table for GitHub or paper-adjacent reporting.
@@ -142,6 +146,9 @@ an algorithm cannot run for a selected size, the result row is shown as skipped.
 | `config` | Locked `MSD,LSD,TINY` configuration |
 | `algos`, `algo` | Expanded algorithm selection when `curated=false` |
 | `tupleBits` | Direct tuple-space bit cap |
+| `contiguousTupleBits`, `directTupleContiguousBits` | Direct tuple bit cap for contiguous masks |
+| `directTupleInPlaceMax`, `directTupleInPlaceMaxRecords`, `tupleInPlaceMax` | Max records for direct tuple in-place projection |
+| `directTupleManyPartitions`, `directTupleManyPartitionMin`, `tupleManyPartitions` | Direct tuple partition count that forces in-place projection |
 | `tuplePacking` | Force packed sparse tuple cycles |
 | `staggerTuples`, `staggerTupleCycles` | Enable adaptive wider tuple-cycle planning |
 | `staggerTupleBits` | Max tuple-cycle width considered, capped at `16` |
@@ -206,8 +213,8 @@ to show stability and outliers.
 
 Every benchmark run is verified:
 
-- key-only baselines are checked for unsigned order, sum, and xor
-- record baselines are checked for unsigned key order, sum, and xor
+- key-only baselines are checked for selected key order, sum, and xor
+- record baselines are checked for selected key order, sum, and xor
 - A.P.E.X. record runs are verified through the project verifier
 
 The generator is deterministic for a given mode and record count, so each
