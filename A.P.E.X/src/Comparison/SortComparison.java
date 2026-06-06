@@ -47,16 +47,16 @@ public final class SortComparison {
     	    DataMode.LOW_BITS_ONLY,
     	    DataMode.HIGH_BITS_ONLY,
     	    DataMode.DUPLICATES,
-    	    DataMode.ZIPFIANISH,    	      	   
+    	    DataMode.ZIPFIANISH,   	      	   
     	    DataMode.SPARSE_ENTROPY_EXPLOSION
     	};
     
     static final long[] SIZES_TO_RUN = { 	
     	    		
     	    1_000_000L,
-    	    10_000_000L,
-    	    100_000_000L,
-    	    500_000_000L
+    	    10_000_000,
+    	   100_000_000L,
+    	 //   500_000_000L
     	};
 
     static ArrayList<Benchmark> selectedBenchmarksCurated() {
