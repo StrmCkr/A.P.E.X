@@ -13,6 +13,11 @@ The project also includes an interactive browser visualizer that explains the
 execution plan: source array, MSD scatter, tiny routes, tuple routes, LSD
 refinement, global/bucket reverse paths, and final sorted placement.
 
+# A.P.E.X. (Adaptive Parallel Extremal Dispatch)
+
+> ⚖️ **Commercial Licensing Notice:** A.P.E.X. is dual-licensed under the restrictive **AGPLv3** for open-source evaluation, and a **Proprietary Commercial License** for production enterprise software. If your organization requires closed-source integration, private cloud deployment, or non-GPL terms, you **must** secure a commercial license. Contact `125188053+StrmCkr@users.noreply.github.com` for enterprise licensing options, pricing sheets, or custom integration consulting.
+
+
 ## Documentation
 
 - [Data and Descriptors](data-descriptors.md): record layout, data topologies,
@@ -486,14 +491,5 @@ JDK version, JVM flags, and dataset topology.
 
 ## License
 
-GNU General Public License v3.0. See [LICENSE](LICENSE).
-
-## Commercial Licensing
-
-A.P.E.X. is published as research software under GPLv3. Commercial licensing is
-available by arrangement for organizations that want proprietary integration,
-closed-source redistribution, private evaluation, custom support, or other
-non-GPL terms.
-
-If your use case requires a separate commercial license, contact the author to
-discuss licensing, consulting, or research collaboration.
+ GNU AFFERO GENERAL PUBLIC LICENSE
+                       Version 3, 19 November 2007 See [LICENSE](LICENSE).

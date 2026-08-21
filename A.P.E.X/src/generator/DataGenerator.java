@@ -10,10 +10,12 @@ public final class DataGenerator {
                     return mix64(i);
 
                 case SORTED:
-                    return scaleOrderedKey(i, n);
+                   // return scaleOrderedKey(i, n);
+                	return (long)i;
 
                 case REVERSE:
-                    return scaleOrderedKey(n - 1 - i, n);
+                   // return scaleOrderedKey(n - 1 - i, n);
+                	return n-1-i;
 
                 case NEARLY_SORTED: {
                     long j = i ^ (mix64(i) & 1023L);
