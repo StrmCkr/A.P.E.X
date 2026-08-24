@@ -3,13 +3,14 @@ package histogram;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.concurrent.Future;
-import Tools.tools;
-import config.configurations.Config;
-import histogram.histogram.HistogramResult;
+
+import config.Configurations.Config;
+import histogram.Histogram.HistogramResult;
 import main.Apex;
+import tools.Tools;
 
 @SuppressWarnings({"removal", "preview"})
-public class buildhistogram {
+public class Buildhistogram {
     
     /**
      * 🚀 Hardware-Adaptive Vectorized MSD Histogram Scanner.
@@ -148,7 +149,7 @@ public class buildhistogram {
             }));
         }
 
-        tools.waitForFutures(futures);
+        Tools.waitForFutures(futures);
         return result;
     }
 }

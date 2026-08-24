@@ -4,7 +4,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Locale;
 
-public class dataparser {
+public class Dataparser {
 	public  static DataMode parseMode(String arg) {
 	        try {
 	            return DataMode.valueOf(arg.trim().toUpperCase(Locale.ROOT).replace('-', '_'));
@@ -27,8 +27,8 @@ public class dataparser {
         int range = normalized.indexOf("..");
 
         if (range >= 0) {
-            DataMode start = dataparser.parseMode(normalized.substring(0, range));
-            DataMode end = dataparser.parseMode(normalized.substring(range + 2));
+            DataMode start = Dataparser.parseMode(normalized.substring(0, range));
+            DataMode end = Dataparser.parseMode(normalized.substring(range + 2));
             DataMode[] values = DataMode.values();
             int s = start.ordinal();
             int e = end.ordinal();
@@ -48,7 +48,7 @@ public class dataparser {
 
         for (String part : v.split(",")) {
             if (!part.trim().isEmpty()) {
-                modes.add(dataparser.parseMode(part));
+                modes.add(Dataparser.parseMode(part));
             }
         }
 

@@ -1,4 +1,4 @@
-package Tools;
+package tools;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
@@ -6,11 +6,11 @@ import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
-import Tuples.tuples;
 import generator.DataMode;
 import main.Apex;
+import tuples.Tuples;
 
-public class tools {
+public class Tools {
 	  public static final long PARALLEL_COPY_MIN_RECORDS = Long.getLong(
 	            "apex.parallelCopyRecords",
 	            4_194_304L
@@ -163,7 +163,7 @@ public class tools {
 	            return shiftedDigit(key, shift, mask);
 	        }
 
-	        return tuples.tupleIndex(key, bitMask);
+	        return Tuples.tupleIndex(key, bitMask);
 	    }
 	    /**
 	     * 🚀 Hardware-Adaptive Non-Temporal Parallel Bulk Copy Engine.

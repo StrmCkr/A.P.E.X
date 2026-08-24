@@ -4,12 +4,12 @@ import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.concurrent.Future;
 
-import MSD.msdbucketplan.MsdBucketPlan;
-import Tools.tools;
-import config.configurations.Config;
+import config.Configurations.Config;
 import main.Apex;
+import msd.Msdbucketplan.MsdBucketPlan;
+import tools.Tools;
 
-public class scattered {
+public class Scattered {
     public static void scatterIntoMsdBuckets(
             MemorySegment src,
             MemorySegment dst,
@@ -193,7 +193,7 @@ public class scattered {
             }));
         }
 
-        tools.waitForFutures(futures);
+        Tools.waitForFutures(futures);
         if (hasDescendingScatter) {
             markDescendingScatterNormalized(plan, cfg);
         }

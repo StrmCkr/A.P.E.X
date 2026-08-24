@@ -1,6 +1,6 @@
 package generator;
 
-import Tools.tools;
+import tools.Tools;
 
 public final class DataGenerator {
 
@@ -325,10 +325,10 @@ public final class DataGenerator {
     }
 
     static long scaleOrderedKey(long r, long n) {
-        return tools.scaleOrderedKey(r, n);
+        return Tools.scaleOrderedKey(r, n);
     }
 
     static long mix64(long x) {
-        return tools.mix64(x);
+        return Tools.mix64(x);
     }
 }

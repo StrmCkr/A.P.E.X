@@ -9,20 +9,21 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import java.util.concurrent.Semaphore;
-import LSD.lsdbucketplan;
-import MSD.msdbucketplan;
-import MSD.msdbucketplan.MsdBucketPlan;
-import Tools.tools;
-import Tools.verifier;
-import Tuples.tuples;
-import config.configurations;
-import config.configurations.Config;
-import config.runoptions;
-import config.runoptions.Options;
+
+import config.Configurations;
+import config.Configurations.Config;
+import config.Runoptions;
+import config.Runoptions.Options;
 import generator.DataMode;
 import generator.DataTopology;
-import generator.initiatedata;
-import scatter.scattered;
+import generator.Initiatedata;
+import lsd.Lsdbucketplan;
+import msd.Msdbucketplan;
+import msd.Msdbucketplan.MsdBucketPlan;
+import scatter.Scattered;
+import tools.Tools;
+import tools.Verifier;
+import tuples.Tuples;
 
 
 /*
@@ -635,9 +636,9 @@ public class Apex {
   
 
     public static void main(String[] args) throws Exception {
-        Options options = runoptions.parseOptions(args);
+        Options options = Runoptions.parseOptions(args);
 
-        runoptions.applyApexSettings(options);
+        Runoptions.applyApexSettings(options);
         POOL = Executors.newFixedThreadPool(THREADS);
 
         try {
@@ -715,18 +716,18 @@ public class Apex {
             return options.lockedConfig;
         }
 
-        DataMode tuneMode = tools.firstNonEmptyMode(options.modes);
-        long recordBasis = tools.firstPositiveRecord(options.recordsList);
+        DataMode tuneMode = Tools.firstNonEmptyMode(options.modes);
+        long recordBasis = Tools.firstPositiveRecord(options.recordsList);
 
         if (options.sweep) {
-            recordBasis = tools.firstPositive(recordBasis, options.sweepRecords);
+            recordBasis = Tools.firstPositive(recordBasis, options.sweepRecords);
             if (tuneMode == null) {
                 tuneMode = DataMode.RANDOM;
             }
         }
 
         if (tuneMode == null || recordBasis <= 0) {
-            Config fallback = configurations.defaultConfig();
+            Config fallback = Configurations.defaultConfig();
             System.out.println("Auto-tune skipped (no non-empty run requested). Using " + fallback);
             return fallback;
         }
@@ -759,31 +760,31 @@ public class Apex {
         warmUp("Selected-config warmup", cfg, Math.min(records, options.warmupRecords), alignment, mode);
 
         try (Arena arena = Arena.ofShared()) {
-            long bytes = tools.bytesForRecords(records);
+            long bytes = Tools.bytesForRecords(records);
             MemorySegment src = arena.allocate(bytes, alignment);
             MemorySegment dst = null;
 
             System.out.println("Initializing: " + records + " records");
-            initiatedata.initData(src, records, mode);
+            Initiatedata.initData(src, records, mode);
 
             Timer total = Timer.start();
             int inputOrder = ORDER_FAST_PATH
                     ? detectInputOrderFastPath(src, records, true)
-                    : tools.ORDER_MIXED;
+                    : Tools.ORDER_MIXED;
             MemorySegment sorted = null;
 
-            if (inputOrder == tools.ORDER_ASCENDING) {
+            if (inputOrder == Tools.ORDER_ASCENDING) {
                 sorted = src;
                 System.out.println("MSD plan/scatter/LSD skipped (input already ascending)");
-            } else if (inputOrder == tools.ORDER_DESCENDING) {
+            } else if (inputOrder == Tools.ORDER_DESCENDING) {
                 dst = allocateDestination(arena, bytes, alignment, records);
                 Timer t0 = Timer.start();
-                tools.reverseCopyRecords(src, 0, dst, 0, records);
+                Tools.reverseCopyRecords(src, 0, dst, 0, records);
                 sorted = dst;
                 report("Descending reverse", records, t0);
             } else {               
                 Timer t0 = Timer.start();
-                MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
+                MsdBucketPlan msdPlan = Msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
                 report("MSD adaptive plan", records, t0);
                 printMsdBucketStats(msdPlan, cfg);
 
@@ -795,9 +796,9 @@ public class Apex {
                     dst = allocateDestination(arena, bytes, alignment, records);
                     t0 = Timer.start();
                     if (DESCENDING_SCATTER_FAST_PATH) {
-                        scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                        Scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
                     } else {
-                        tools.reverseCopyRecords(src, 0, dst, 0, records);
+                        Tools.reverseCopyRecords(src, 0, dst, 0, records);
                     }
                     sorted = dst;
                     report(DESCENDING_SCATTER_FAST_PATH ? "Descending scatter" : "Descending reverse", records, t0);
@@ -815,13 +816,13 @@ public class Apex {
                     dst = allocateDestination(arena, bytes, alignment, records);
                     sorted = dst;
                     t0 = Timer.start();
-                    scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                    Scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
                     report("MSD scatter", records, t0);
                 }
 
                 if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
                     t0 = Timer.start();
-                    lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+                    Lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
                     report("Bucket refinement", records, t0);
                 } else if (!msdPlan.inputAscending && !msdPlan.inputDescending) {
                     System.out.println("Bucket refinement skipped");
@@ -830,7 +831,7 @@ public class Apex {
 
             report("TOTAL", records, total);
 
-            verifier.verify(sorted, records, mode);
+            Verifier.verify(sorted, records, mode);
         }
     } 
 
@@ -852,7 +853,7 @@ public class Apex {
     static Config autoTune(long alignment, DataMode mode, long records, Options options) throws Exception {
         if (mode == DataMode.EMPTY || records <= 0) {
             System.out.println("Auto-tune skipped (EMPTY/no-record mode)");
-            return configurations.defaultConfig();
+            return Configurations.defaultConfig();
         }
 
         Config[] candidates = buildConfigCandidates(
@@ -865,7 +866,7 @@ public class Apex {
         );
 
         long testN = Math.min(records, options.tuneRecords);
-        warmUp("Auto-tune warmup", configurations.defaultConfig(), testN, alignment, mode);
+        warmUp("Auto-tune warmup", Configurations.defaultConfig(), testN, alignment, mode);
 
         System.out.println("Auto-tuning on subset: " + testN + " / full=" + records);
         System.out.println("Auto-tune repeats: warmups=" + TUNE_WARMUPS + " runs=" + TUNE_RUNS + " score=median");
@@ -892,7 +893,7 @@ public class Apex {
         }
 
         if (!measuredAny) {
-            best = configurations.defaultConfig();
+            best = Configurations.defaultConfig();
             System.out.println("Auto-tune found no memory-safe candidates. Using " + best);
         }
 
@@ -964,7 +965,7 @@ public class Apex {
         long histBytes = bucketThreadCells * Integer.BYTES;
         long masksBytes = bucketThreadCells * 2L * Long.BYTES;
         long scatterOffsetBytes = bucketThreadCells * Integer.BYTES;
-        long countsBytes = (long) THREADS * Math.max(cfg.lsdRadix, tuples.directTupleRadixCap()) * Integer.BYTES;
+        long countsBytes = (long) THREADS * Math.max(cfg.lsdRadix, Tuples.directTupleRadixCap()) * Integer.BYTES;
         long planBytes = (long) cfg.msdBucketCount * (
                 Long.BYTES +            // starts
                 Integer.BYTES +         // sizes
@@ -989,11 +990,11 @@ public class Apex {
             boolean announce
     ) throws Exception {
         int order = detectInputOrderFastPath(src, records, announce);
-        if (order == tools.ORDER_MIXED) {
+        if (order == Tools.ORDER_MIXED) {
             return null;
         }
 
-        if (order == tools.ORDER_ASCENDING) {
+        if (order == Tools.ORDER_ASCENDING) {
             if (announce) {
                 System.out.println("MSD plan/scatter/LSD skipped (input already ascending)");
             }
@@ -1002,7 +1003,7 @@ public class Apex {
 
         Timer reverse = announce ? Timer.start() : null;        
 
-        tools.reverseCopyRecords(src, 0, dst, 0, records);
+        Tools.reverseCopyRecords(src, 0, dst, 0, records);
         if (announce) {
             report("Descending reverse", records, reverse);
         }
@@ -1015,18 +1016,18 @@ public class Apex {
             boolean announce
     ) {
         Timer probe = announce ? Timer.start() : null;
-        int order = tools.quickOrderProbe(src, records);
+        int order = Tools.quickOrderProbe(src, records);
 
         if (announce) {
             report("Input order probe", records, probe);
         }
 
-        if (order == tools.ORDER_MIXED) {
-            return tools.ORDER_MIXED;
+        if (order == Tools.ORDER_MIXED) {
+            return Tools.ORDER_MIXED;
         }
 
         Timer scan = announce ? Timer.start() : null;
-        order = tools.detectMonotonicOrder(src, records);
+        order = Tools.detectMonotonicOrder(src, records);
 
         if (announce) {
             report("Input order scan", records, scan);
@@ -1043,18 +1044,18 @@ public class Apex {
             boolean announceVerify
     ) throws Exception {
         try (Arena arena = Arena.ofShared()) {
-            long bytes = tools.bytesForRecords(testN);
+            long bytes = Tools.bytesForRecords(testN);
             MemorySegment src = arena.allocate(bytes, alignment);
             MemorySegment dst = arena.allocate(bytes, alignment);
 
-            initiatedata.initData(src, testN, mode);
+            Initiatedata.initData(src, testN, mode);
 
             long start = System.nanoTime();
             MemorySegment sorted = sortPipeline(src, dst, testN, cfg);
 
             double sec = elapsed(start);
 
-            verifier.verify(sorted, testN, mode, announceVerify);
+            Verifier.verify(sorted, testN, mode, announceVerify);
 
             return sec;
         }
@@ -1075,7 +1076,7 @@ public class Apex {
             return sorted;
         }
 
-        MsdBucketPlan msdPlan = msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
+        MsdBucketPlan msdPlan = Msdbucketplan.buildAdaptiveMsdBucketPlan(src, records, cfg);
 
         sorted = dst;
         MemorySegment lsdScratch = src;
@@ -1083,9 +1084,9 @@ public class Apex {
             sorted = src;
         } else if (msdPlan.inputDescending) {
             if (DESCENDING_SCATTER_FAST_PATH) {
-                scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+                Scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
             } else {
-                tools.reverseCopyRecords(src, 0, dst, 0, records);
+                Tools.reverseCopyRecords(src, 0, dst, 0, records);
             }
             sorted = dst;
         } else if (sourceAlreadyFinal(msdPlan, cfg)) {
@@ -1094,11 +1095,11 @@ public class Apex {
             sorted = src;
             lsdScratch = dst;
         } else {
-            scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
+            Scattered.scatterIntoMsdBuckets(src, dst, records, msdPlan, cfg);
         }
 
         if (!msdPlan.inputAscending && !msdPlan.inputDescending && planNeedsRefinement(msdPlan, cfg)) {
-            lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
+            Lsdbucketplan.sortMsdBucketsWithLsdRadix(lsdScratch, sorted, msdPlan, cfg);
         }
 
         return sorted;
@@ -1113,7 +1114,7 @@ public class Apex {
             }
 
             nonEmpty++;
-            if (nonEmpty > 1 || lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+            if (nonEmpty > 1 || Lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
                 return false;
             }
         }
@@ -1143,7 +1144,7 @@ public class Apex {
 
     public static boolean planNeedsRefinement(MsdBucketPlan plan, Config cfg) {
         for (int b = 0; b < cfg.msdBucketCount; b++) {
-            if (lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, b)) {
+            if (Lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, b)) {
                 return true;
             }
         }
@@ -1152,10 +1153,10 @@ public class Apex {
     }
 
     public static boolean planNeedsOffHeapScratch(MsdBucketPlan plan, Config cfg) {
-        boolean preferDirectTupleInPlace = lsdbucketplan.preferManyDirectTuplePartitionsInPlace(plan, cfg);
+        boolean preferDirectTupleInPlace = Lsdbucketplan.preferManyDirectTuplePartitionsInPlace(plan, cfg);
 
         for (int b = 0; b < cfg.msdBucketCount; b++) {
-            if (!lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+            if (!Lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
                 continue;
             }
 
@@ -1168,7 +1169,7 @@ public class Apex {
                     int childSize = childSizes[child];
                     boolean childDescending = plan.localDescending[b] != null &&
                             plan.localDescending[b][child];
-                    if (!lsdbucketplan.localChildHasLsdWork(plan, b, child) ||
+                    if (!Lsdbucketplan.localChildHasLsdWork(plan, b, child) ||
                             childDescending ||
                             childSize <= MAX_HEAP_SCRATCH_RECORDS ||
                             childSize < cfg.tinyPartitionThreshold ||
@@ -1176,8 +1177,8 @@ public class Apex {
                         continue;
                     }
 
-                    if (tuples.tupleSpaceFitsDirectPass(childVariableMasks[child], childSize) &&
-                            tuples.directTupleUsesInPlace(childSize, preferDirectTupleInPlace)) {
+                    if (Tuples.tupleSpaceFitsDirectPass(childVariableMasks[child], childSize) &&
+                            Tuples.directTupleUsesInPlace(childSize, preferDirectTupleInPlace)) {
                         continue;
                     }
 
@@ -1192,8 +1193,8 @@ public class Apex {
                     size >= cfg.tinyPartitionThreshold &&
                     (plan.cycleCounts[b] > 0 || plan.tupleTailMasks[b] != 0L)) {
                 if (plan.cycleCounts[b] == 0 &&
-                        tuples.tupleSpaceFitsDirectPass(plan.tupleTailMasks[b], size) &&
-                        tuples.directTupleUsesInPlace(size, preferDirectTupleInPlace)) {
+                        Tuples.tupleSpaceFitsDirectPass(plan.tupleTailMasks[b], size) &&
+                        Tuples.directTupleUsesInPlace(size, preferDirectTupleInPlace)) {
                     continue;
                 }
 
@@ -1235,7 +1236,7 @@ public class Apex {
         int[] tempCycleShifts = new int[64];
         int[] tempCycleMasks = new int[64];
         long[] tempCycleBitMasks = new long[64];
-        boolean preferDirectTupleInPlace = lsdbucketplan.preferManyDirectTuplePartitionsInPlace(plan, cfg);
+        boolean preferDirectTupleInPlace = Lsdbucketplan.preferManyDirectTuplePartitionsInPlace(plan, cfg);
 
         for (int i = 0; i < cfg.msdBucketCount; i++) {
             int s = plan.sizes[i];
@@ -1254,11 +1255,11 @@ public class Apex {
                 mixed++;
             }
 
-            if (lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, i)) {
+            if (Lsdbucketplan.bucketHasScheduledLsdWork(plan, cfg, i)) {
                 refinementBuckets++;
             }
 
-            if (lsdbucketplan.bucketHasLsdWork(plan, cfg, i)) {
+            if (Lsdbucketplan.bucketHasLsdWork(plan, cfg, i)) {
 
                 if (plan.bucketDescending[i]) {
                     refinementWorkItems++;
@@ -1276,7 +1277,7 @@ public class Apex {
                         long[] childVariableMasks = plan.localVariableMasks[i];
 
                         for (int child = 0; child < childSizes.length; child++) {
-                            if (!lsdbucketplan.localChildHasLsdWork(plan, i, child)) {
+                            if (!Lsdbucketplan.localChildHasLsdWork(plan, i, child)) {
                                 continue;
                             }
 
@@ -1298,12 +1299,12 @@ public class Apex {
                                 continue;
                             }
 
-                            if (tuples.tupleSpaceFitsDirectPass(childVariableMask, childSize)) {
+                            if (Tuples.tupleSpaceFitsDirectPass(childVariableMask, childSize)) {
                                 int directBits = Long.bitCount(childVariableMask);
                                 maxDirectTupleBits = Math.max(maxDirectTupleBits, directBits);
                                 directTupleCounterSlots += 1L << directBits;
                                 directTupleBuckets++;
-                                if (tuples.directTupleUsesInPlace(childSize, preferDirectTupleInPlace)) {
+                                if (Tuples.directTupleUsesInPlace(childSize, preferDirectTupleInPlace)) {
                                     directTupleInPlaceBuckets++;
                                 } else {
                                     directTupleOffHeapBuckets++;
@@ -1315,7 +1316,7 @@ public class Apex {
                                 offHeapRefinements++;
                             }
 
-                            int cycles = lsdbucketplan.buildLsdCyclePlan(
+                            int cycles = Lsdbucketplan.buildLsdCyclePlan(
                                     childVariableMask,
                                     cfg,
                                     localMsdShift,
@@ -1324,13 +1325,13 @@ public class Apex {
                                     tempCycleMasks,
                                     tempCycleBitMasks
                             );
-                            int plannedCycles = tuples.plannedCyclePrefixBeforeTupleTail(
+                            int plannedCycles = Tuples.plannedCyclePrefixBeforeTupleTail(
                                     childVariableMask,
                                     tempCycleBitMasks,
                                     cycles,
                                     childSize
                             );
-                            long tupleTailMask = tuples.tupleTailMaskAfterPrefix(
+                            long tupleTailMask = Tuples.tupleTailMaskAfterPrefix(
                                     childVariableMask,
                                     tempCycleBitMasks,
                                     plannedCycles,
@@ -1375,7 +1376,7 @@ public class Apex {
                         maxDirectTupleBits = Math.max(maxDirectTupleBits, directBits);
                         directTupleCounterSlots += 1L << directBits;
                         directTupleBuckets++;
-                        if (tuples.directTupleUsesInPlace(s, preferDirectTupleInPlace)) {
+                        if (Tuples.directTupleUsesInPlace(s, preferDirectTupleInPlace)) {
                             directTupleInPlaceBuckets++;
                         } else {
                             directTupleOffHeapBuckets++;

@@ -4,13 +4,13 @@ import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.Semaphore;
 
-import config.configurations.Config;
+import config.Configurations.Config;
 import generator.DataMode;
-import generator.dataparser;
-import generator.recordcountformode;
+import generator.Dataparser;
+import generator.Recordcountformode;
 import main.Apex;
 
-public class runoptions {
+public class Runoptions {
 
     public static class Options {
     	public  ArrayList<DataMode> modes = new ArrayList<>();
@@ -266,7 +266,7 @@ public class runoptions {
             switch (key) {
                 case "mode":
                 case "modes":
-                    options.modes = dataparser.parseModes(value);
+                    options.modes = Dataparser.parseModes(value);
                     break;
                 case "records":
                 case "record":
@@ -453,7 +453,7 @@ public class runoptions {
         }
 
         if (!positional.isEmpty() && options.modes.isEmpty()) {
-            options.modes.add(dataparser.parseMode(positional.get(0)));
+            options.modes.add(Dataparser.parseMode(positional.get(0)));
         }
 
         if (positional.size() > 1 && options.recordsList == null) {
@@ -473,7 +473,7 @@ public class runoptions {
         }
 
         if (options.recordsList == null) {
-            options.recordsList = new long[] { recordcountformode.recordCountForMode(options.modes.get(0)) };
+            options.recordsList = new long[] { Recordcountformode.recordCountForMode(options.modes.get(0)) };
         }
 
         if (!workStealBatchExplicit) {

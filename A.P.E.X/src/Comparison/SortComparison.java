@@ -9,17 +9,16 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
-
-import Tools.tools;
-import Tools.verifier;
-import config.configurations;
-import config.configurations.Config;
-import config.runoptions;
+import config.Configurations;
+import config.Configurations.Config;
+import config.Runoptions;
 import generator.DataGenerator;
 import generator.DataMode;
-import generator.dataparser;
-import generator.initiatedata;
+import generator.Dataparser;
+import generator.Initiatedata;
 import main.Apex;
+import tools.Tools;
+import tools.Verifier;
 
 
 public final class SortComparison {
@@ -131,7 +130,7 @@ public final class SortComparison {
         int staggerTupleBits = Integer.getInteger("apex.staggerTupleBits", 16);
         int staggerTupleMinRecords = Integer.getInteger("apex.staggerTupleMinRecords", 0);
         boolean curated = true;
-        Config config = configurations.defaultConfig();
+        Config config = Configurations.defaultConfig();
         String algos = "records";
     }
 
@@ -485,16 +484,16 @@ public final class SortComparison {
                 long alignment
         ) throws Exception {
             try (Arena arena = Arena.ofShared()) {
-                long bytes = tools.bytesForRecords(records);
+                long bytes = Tools.bytesForRecords(records);
                 MemorySegment src = arena.allocate(bytes, alignment);
                 MemorySegment dst = arena.allocate(bytes, alignment);
 
-                initiatedata.initData(src, records, mode);
+                Initiatedata.initData(src, records, mode);
 
                 long start = System.nanoTime();
                 MemorySegment sorted = Apex.sortPipeline(src, dst, records, cfg);
                 double seconds = elapsed(start);
-                verifier.verify(sorted, records, mode, false);
+                Verifier.verify(sorted, records, mode, false);
                 return seconds;
             }
         }
@@ -527,7 +526,7 @@ public final class SortComparison {
                 long alignment
         ) throws Exception {
             try (Arena arena = Arena.ofShared()) {
-                long bytes = tools.bytesForRecords(records);
+                long bytes = Tools.bytesForRecords(records);
                 MemorySegment src = arena.allocate(bytes, alignment);
                 MemorySegment dst = arena.allocate(bytes, alignment);
 
@@ -702,7 +701,7 @@ public final class SortComparison {
             // counting
             int[] count = new int[RADIX];
             for (int i = lo; i < hi; i++) {
-                int d = tools.shiftedDigit(a[i], shift, MASK);
+                int d = Tools.shiftedDigit(a[i], shift, MASK);
                 count[d]++;
             }
 
@@ -718,7 +717,7 @@ public final class SortComparison {
 
             // distribute (absolute indices)
             for (int i = lo; i < hi; i++) {
-                int d = tools.shiftedDigit(a[i], shift, MASK);
+                int d = Tools.shiftedDigit(a[i], shift, MASK);
                 aux[next[d]++] = a[i];
             }
 
@@ -780,7 +779,7 @@ public final class SortComparison {
             int[] count = new int[RADIX];
             for (int i = lo; i < hi; i++) {
                 long key = recordKey(r, i);
-                int d = tools.shiftedDigit(key, shift, MASK);
+                int d = Tools.shiftedDigit(key, shift, MASK);
                 count[d]++;
             }
 
@@ -797,7 +796,7 @@ public final class SortComparison {
             // ---- Scatter into aux (0‑based window) ----
             for (int i = lo; i < hi; i++) {
                 long key = recordKey(r, i);
-                int d = tools.shiftedDigit(key, shift, MASK);
+                int d = Tools.shiftedDigit(key, shift, MASK);
 
                 int pos = next[d]++ - lo;   // convert absolute → window index
 
@@ -863,7 +862,7 @@ public final class SortComparison {
                 Arrays.fill(count, 0, radix, 0);
 
                 for (long value : in) {
-                    count[tools.shiftedDigit(value, shift, mask)]++;
+                    count[Tools.shiftedDigit(value, shift, mask)]++;
                 }
 
                 int sum = 0;
@@ -874,7 +873,7 @@ public final class SortComparison {
                 }
 
                 for (long value : in) {
-                    int digit = tools.shiftedDigit(value, shift, mask);
+                    int digit = Tools.shiftedDigit(value, shift, mask);
                     out[count[digit]++] = value;
                 }
 
@@ -929,7 +928,7 @@ public final class SortComparison {
                 Arrays.fill(count, 0, radix, 0);
 
                 for (int i = 0; i < n; i++) {
-                    count[tools.shiftedDigit(recordKey(in, i), shift, mask)]++;
+                    count[Tools.shiftedDigit(recordKey(in, i), shift, mask)]++;
                 }
 
                 int sum = 0;
@@ -942,7 +941,7 @@ public final class SortComparison {
                 for (int i = 0; i < n; i++) {
                     int p = i << 1;
                     long key = in[p];
-                    int digit = tools.shiftedDigit(key, shift, mask);
+                    int digit = Tools.shiftedDigit(key, shift, mask);
                     int q = count[digit]++ << 1;
                     out[q] = key;
                     out[q + 1] = in[p + 1];
@@ -998,7 +997,7 @@ public final class SortComparison {
 
             int[] count = new int[RADIX];
             for (int i = start; i < end; i++) {
-                count[tools.shiftedDigit(recordKey(records, i), shift, MASK)]++;
+                count[Tools.shiftedDigit(recordKey(records, i), shift, MASK)]++;
             }
 
             int[] begin = new int[RADIX];
@@ -1013,7 +1012,7 @@ public final class SortComparison {
                 int limit = begin[b] + count[b];
                 while (next[b] < limit) {
                     long key = recordKey(records, next[b]);
-                    int digit = tools.shiftedDigit(key, shift, MASK);
+                    int digit = Tools.shiftedDigit(key, shift, MASK);
 
                     if (digit == b) {
                         next[b]++;
@@ -1078,7 +1077,7 @@ public final class SortComparison {
             int[] count = new int[RADIX];
 
             for (int i = start; i < end; i++) {
-                int digit = tools.shiftedDigit(data[i], shift, MASK);
+                int digit = Tools.shiftedDigit(data[i], shift, MASK);
                 count[digit]++;
             }
 
@@ -1098,7 +1097,7 @@ public final class SortComparison {
 
                 while (next[b] < limit) {
                     long value = data[next[b]];
-                    int digit = tools.shiftedDigit(value, shift, MASK);
+                    int digit = Tools.shiftedDigit(value, shift, MASK);
 
                     if (digit == b) {
                         next[b]++;
@@ -1202,7 +1201,7 @@ public final class SortComparison {
 
 
     static void configureApex(Args args) {
-        runoptions.applyApexSettings(
+        Runoptions.applyApexSettings(
                 args.threads,
                 args.orderFastPath,
                 args.signedKeys,
@@ -1246,7 +1245,7 @@ public final class SortComparison {
 
             int eq = arg.indexOf('=');
             if (eq < 0) {
-                args.modes = new DataMode[] { dataparser.parseMode(arg) };
+                args.modes = new DataMode[] { Dataparser.parseMode(arg) };
                 continue;
             }
 
@@ -1254,11 +1253,11 @@ public final class SortComparison {
             String value = arg.substring(eq + 1).trim();
 
             switch (key) {
-            case "curated": args.curated = runoptions.parseBoolean(value); break;
+            case "curated": args.curated = Runoptions.parseBoolean(value); break;
             case "signed":
             case "signedkeys":
             case "signedkey":
-                args.signedKeys = runoptions.parseBoolean(value);
+                args.signedKeys = Runoptions.parseBoolean(value);
                 break;
             case "keyorder": {
                 String v = value.trim().toLowerCase(Locale.ROOT);
@@ -1267,141 +1266,141 @@ public final class SortComparison {
                 } else if (v.equals("unsigned") || v.equals("unsignedlong")) {
                     args.signedKeys = false;
                 } else {
-                    args.signedKeys = runoptions.parseBoolean(value);
+                    args.signedKeys = Runoptions.parseBoolean(value);
                 }
                 break;
             }
                 case "descendingscatter":
                 case "descscatter":
                 case "globaldescendingscatter":
-                    args.descendingScatterFastPath = runoptions.parseBoolean(value);
+                    args.descendingScatterFastPath = Runoptions.parseBoolean(value);
                     break;
                 case "mode":
-                    args.modes = new DataMode[] { dataparser.parseMode(value) };
+                    args.modes = new DataMode[] { Dataparser.parseMode(value) };
                     break;
                 case "modes":
-                    args.modes = dataparser.parseModes(value).toArray(new DataMode[0]);
+                    args.modes = Dataparser.parseModes(value).toArray(new DataMode[0]);
                     break;
                 case "records":
                 case "n":
-                    args.recordsList = runoptions.parseLongListOrRange(value);
+                    args.recordsList = Runoptions.parseLongListOrRange(value);
                     break;
                 case "runs":
-                    args.runs = runoptions.parsePositiveInt(value);
+                    args.runs = Runoptions.parsePositiveInt(value);
                     break;
                 case "warmup":
                 case "warmups":
-                    args.warmups = runoptions.parseNonNegativeInt(value);
+                    args.warmups = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "threads":
-                    args.threads = runoptions.parseThreads(value);
+                    args.threads = Runoptions.parseThreads(value);
                     break;
                 case "config":
-                    args.config = runoptions.parseConfig(value);
+                    args.config = Runoptions.parseConfig(value);
                     break;
                 case "algos":
                 case "algo":
                     args.algos = value;
                     break;
                 case "tuplebits":
-                    args.tupleBits = runoptions.parseNonNegativeInt(value);
+                    args.tupleBits = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "contiguoustuplebits":
                 case "directtuplecontiguousbits":
                 case "contiguousdirecttuplebits":
-                    args.contiguousTupleBits = runoptions.parseNonNegativeInt(value);
+                    args.contiguousTupleBits = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "directtupleinplacemax":
                 case "directtupleinplacemaxrecords":
                 case "tupleinplacemax":
                 case "tupleinplacemaxrecords":
-                    args.directTupleInPlaceMaxRecords = runoptions.parseIntCount(value, "directTupleInPlaceMaxRecords");
+                    args.directTupleInPlaceMaxRecords = Runoptions.parseIntCount(value, "directTupleInPlaceMaxRecords");
                     break;
                 case "directtuplemanypartitions":
                 case "directtuplemanypartitionmin":
                 case "tuplemanypartitions":
                 case "tuplemanypartitionmin":
-                    args.directTupleManyPartitionMin = runoptions.parseNonNegativeInt(value);
+                    args.directTupleManyPartitionMin = Runoptions.parseNonNegativeInt(value);
                     directTupleManyPartitionExplicit = true;
                     break;
                 case "staggertuples":
                 case "staggertuplecycles":
-                    args.staggerTupleCycles = runoptions.parseBoolean(value);
+                    args.staggerTupleCycles = Runoptions.parseBoolean(value);
                     break;
                 case "staggertuplecostmodel":
                 case "staggercostmodel":
-                    args.staggerTupleCostModel = runoptions.parseBoolean(value);
+                    args.staggerTupleCostModel = Runoptions.parseBoolean(value);
                     break;
                 case "staggertuplebits":
-                    args.staggerTupleBits = runoptions.parsePositiveInt(value);
+                    args.staggerTupleBits = Runoptions.parsePositiveInt(value);
                     break;
                 case "staggertuplemin":
                 case "staggertupleminrecords":
-                    args.staggerTupleMinRecords = runoptions.parseNonNegativeInt(value);
+                    args.staggerTupleMinRecords = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "lsdheapunroll":
                 case "heapunroll":
-                    args.lsdHeapUnroll = runoptions.parseNonNegativeInt(value);
+                    args.lsdHeapUnroll = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "lsdheapunrollmin":
                 case "heapunrollmin":
                 case "lsdheapunrollminrecords":
-                    args.lsdHeapUnrollMinRecords = runoptions.parsePositiveInt(value);
+                    args.lsdHeapUnrollMinRecords = Runoptions.parsePositiveInt(value);
                     break;
                 case "heapscratch":
                 case "heapscratchrecords":
-                    args.heapScratchRecords = runoptions.parsePositiveInt(value);
+                    args.heapScratchRecords = Runoptions.parsePositiveInt(value);
                     break;
                 case "localmsdbits":
                 case "secondarymsdbits":
                 case "submsdbits":
-                    args.localMsdBits = runoptions.parseNonNegativeInt(value);
+                    args.localMsdBits = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "localmsdmaxchildren":
                 case "localmsdchildren":
                 case "maxlocalmsdchildren":
-                    args.localMsdMaxChildren = runoptions.parseNonNegativeInt(value);
+                    args.localMsdMaxChildren = Runoptions.parseNonNegativeInt(value);
                     break;
                 case "dominantcore":
                 case "dominantcorefastpath":
-                    args.dominantCoreFastPath = runoptions.parseBoolean(value);
+                    args.dominantCoreFastPath = Runoptions.parseBoolean(value);
                     break;
                 case "dominantcoresamplerecords":
                 case "dominantcoresample":
-                    args.dominantCoreSampleRecords = runoptions.parseIntCount(value, "dominantCoreSampleRecords");
+                    args.dominantCoreSampleRecords = Runoptions.parseIntCount(value, "dominantCoreSampleRecords");
                     break;
                 case "dominantcorecandidates":
-                    args.dominantCoreCandidates = runoptions.parsePositiveInt(value);
+                    args.dominantCoreCandidates = Runoptions.parsePositiveInt(value);
                     break;
                 case "dominantcoreminshare":
                 case "dominantcoreminsharepercent":
-                    args.dominantCoreMinSharePercent = runoptions.parsePositiveInt(value);
+                    args.dominantCoreMinSharePercent = Runoptions.parsePositiveInt(value);
                     break;
                 case "dominantkeyminsharedivisor":
                 case "dominantkeysharedivisor":
-                    args.dominantKeyMinShareDivisor = runoptions.parsePositiveInt(value);
+                    args.dominantKeyMinShareDivisor = Runoptions.parsePositiveInt(value);
                     break;
                 case "largepermits":
                 case "largepartitionpermits":
-                    args.largePermits = runoptions.parsePositiveInt(value);
+                    args.largePermits = Runoptions.parsePositiveInt(value);
                     break;                 
                 case "orderfastpath":
                 case "inputorderfastpath":
                 case "prescan":
-                    args.orderFastPath = runoptions.parseBoolean(value);
+                    args.orderFastPath = Runoptions.parseBoolean(value);
                     break;
                 case "workbatch":
                 case "stealbatch":
                 case "workstealbatch":
-                    args.workStealBatch = runoptions.parsePositiveInt(value);
+                    args.workStealBatch = Runoptions.parsePositiveInt(value);
                     workStealBatchExplicit = true;
                     break;
                 case "workstealing":
                 case "lsdworkstealing":
-                    args.lsdWorkStealing = runoptions.parseBoolean(value);
+                    args.lsdWorkStealing = Runoptions.parseBoolean(value);
                     break;
                 case "tuplepacking":
-                    args.tuplePacking = runoptions.parseBoolean(value);
+                    args.tuplePacking = Runoptions.parseBoolean(value);
                     break;
                 default:
                     throw new IllegalArgumentException("Unknown comparison option: " + raw);
@@ -1444,7 +1443,7 @@ public final class SortComparison {
             throw new IllegalArgumentException("staggerTupleMinRecords must be non-negative");
         }
         if (args.localMsdBits > 0) {
-            runoptions.validateBitRange("Local MSD", args.localMsdBits, args.localMsdBits);
+            Runoptions.validateBitRange("Local MSD", args.localMsdBits, args.localMsdBits);
         }
         if (args.localMsdMaxChildren < 0) {
             throw new IllegalArgumentException("localMsdMaxChildren must be non-negative");
@@ -1461,7 +1460,7 @@ public final class SortComparison {
         if (args.dominantKeyMinShareDivisor <= 0) {
             throw new IllegalArgumentException("dominantKeyMinShareDivisor must be positive");
         }
-        runoptions.validateConfig(args.config);
+        Runoptions.validateConfig(args.config);
         return args;
     }
 
@@ -1557,7 +1556,7 @@ public final class SortComparison {
 
         for (int i = 0; i < data.length; i++) {
             long value = data[i];
-            if (i > 0 && tools.compareKeys(previous, value) > 0) {
+            if (i > 0 && Tools.compareKeys(previous, value) > 0) {
                 throw new RuntimeException("KEY ORDER FAIL at " + i);
             }
 
@@ -1582,7 +1581,7 @@ public final class SortComparison {
 
         for (long i = 0; i < records; i++) {
             long key = data.get(Apex.LONG, i << 4);
-            if (i > 0 && tools.compareKeys(previous, key) > 0) {
+            if (i > 0 && Tools.compareKeys(previous, key) > 0) {
                 throw new RuntimeException("APEX KEY ORDER FAIL at " + i);
             }
 
@@ -1623,7 +1622,7 @@ public final class SortComparison {
             long key = data[p];
             long value = data[p + 1];
 
-            if (i > 0 && tools.compareKeys(previous, key) > 0) {
+            if (i > 0 && Tools.compareKeys(previous, key) > 0) {
                 throw new RuntimeException("RECORD ORDER FAIL at " + i);
             }
 
@@ -1638,8 +1637,8 @@ public final class SortComparison {
             throw new RuntimeException("RECORD KEY CONTENT FAIL");
         }
 
-        if (valueSum != tools.triangularZeroToNMinusOne(n) ||
-                valueXor != tools.xorZeroToNMinusOne(n)) {
+        if (valueSum != Tools.triangularZeroToNMinusOne(n) ||
+                valueXor != Tools.xorZeroToNMinusOne(n)) {
             throw new RuntimeException("RECORD VALUE CONTENT FAIL");
         }
     }
@@ -1655,7 +1654,7 @@ public final class SortComparison {
         for (int i = 0; i < data.length; i++) {
             RecordItem item = data[i];
 
-            if (i > 0 && tools.compareKeys(previous, item.key) > 0) {
+            if (i > 0 && Tools.compareKeys(previous, item.key) > 0) {
                 throw new RuntimeException("OBJECT RECORD ORDER FAIL at " + i);
             }
 
@@ -1670,21 +1669,21 @@ public final class SortComparison {
             throw new RuntimeException("OBJECT RECORD KEY CONTENT FAIL");
         }
 
-        if (valueSum != tools.triangularZeroToNMinusOne(data.length) ||
-                valueXor != tools.xorZeroToNMinusOne(data.length)) {
+        if (valueSum != Tools.triangularZeroToNMinusOne(data.length) ||
+                valueXor != Tools.xorZeroToNMinusOne(data.length)) {
             throw new RuntimeException("OBJECT RECORD VALUE CONTENT FAIL");
         }
     }
 
     static int compareRecordItems(RecordItem left, RecordItem right) {
-        return tools.compareKeys(left.key, right.key);
+        return Tools.compareKeys(left.key, right.key);
     }
 
     static void insertion(long[] data, int lo, int hi) {
         for (int i = lo + 1; i < hi; i++) {
             long key = data[i];
             int j = i - 1;
-            while (j >= lo && tools.compareKeys(data[j], key) > 0) {
+            while (j >= lo && Tools.compareKeys(data[j], key) > 0) {
                 data[j + 1] = data[j];
                 j--;
             }
@@ -1699,7 +1698,7 @@ public final class SortComparison {
             long value = records[p + 1];
             int j = i - 1;
 
-            while (j >= lo && tools.compareKeys(recordKey(records, j), key) > 0) {
+            while (j >= lo && Tools.compareKeys(recordKey(records, j), key) > 0) {
                 int from = j << 1;
                 int to = from + 2;
                 records[to] = records[from];
@@ -1733,17 +1732,17 @@ public final class SortComparison {
     }
 
     static long medianOfThree(long a, long b, long c) {
-        if (tools.compareKeys(a, b) > 0) {
+        if (Tools.compareKeys(a, b) > 0) {
             long t = a;
             a = b;
             b = t;
         }
-        if (tools.compareKeys(b, c) > 0) {
+        if (Tools.compareKeys(b, c) > 0) {
             long t = b;
             b = c;
             c = t;
         }
-        if (tools.compareKeys(a, b) > 0) {
+        if (Tools.compareKeys(a, b) > 0) {
             b = a;
         }
         return b;

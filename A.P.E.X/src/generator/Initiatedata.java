@@ -4,10 +4,10 @@ import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.concurrent.Future;
 
-import Tools.tools;
 import main.Apex;
+import tools.Tools;
 
-public class initiatedata {
+public class Initiatedata {
 	
 	public static void initData(MemorySegment seg, long n, DataMode mode) throws Exception {
 	        if (n == 0 || mode == DataMode.EMPTY) {
@@ -34,6 +34,6 @@ public class initiatedata {
 	            }));
 	        }
 
-	        tools.waitForFutures(futures);
+	        Tools.waitForFutures(futures);
 	    }
 }

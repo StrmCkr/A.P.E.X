@@ -1,4 +1,4 @@
-package LSD;
+package lsd;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
@@ -6,16 +6,16 @@ import java.util.Arrays;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import MSD.msdbucketplan;
-import MSD.msdbucketplan.MsdBucketPlan;
-import Tools.tools;
-import Tuples.tuples;
-import config.configurations.Config;
+import config.Configurations.Config;
 import main.Apex;
 import main.Apex.Scratch;
-import tinysorts.tinysort;
+import msd.Msdbucketplan;
+import msd.Msdbucketplan.MsdBucketPlan;
+import tinysorts.Tinysort;
+import tools.Tools;
+import tuples.Tuples;
 
-public class lsdbucketplan {
+public class Lsdbucketplan {
 	  static final class PartitionWork {
 	        final int bucket;
 	        final long startPos;
@@ -71,7 +71,7 @@ public class lsdbucketplan {
 	            int[] cycleMasks,
 	            long[] cycleBitMasks
 	    ) {
-	        variableMask &= tools.lowBitsMask(remainingBits);
+	        variableMask &= Tools.lowBitsMask(remainingBits);
 
 	        int contiguousCycles = buildContiguousLsdCyclePlan(variableMask, cfg, remainingBits,
 	                cycleShifts, cycleMasks, cycleBitMasks);
@@ -113,7 +113,7 @@ public class lsdbucketplan {
 	        }
 
 	        if (bestTupleBits > 0) {
-	            return tuples.buildPackedTupleCyclePlan(variableMask, bestTupleBits,
+	            return Tuples.buildPackedTupleCyclePlan(variableMask, bestTupleBits,
 	                    cycleShifts, cycleMasks, cycleBitMasks);
 	        }
 
@@ -129,7 +129,7 @@ public class lsdbucketplan {
 		        long[] cycleBitMasks
 		) {
 		    // Zero out any high-order bits beyond our active range
-		    variableMask &= tools.lowBitsMask(remainingBits);
+		    variableMask &= Tools.lowBitsMask(remainingBits);
 		    int cycles = 0;
 
 		    while (variableMask != 0) {
@@ -146,10 +146,10 @@ public class lsdbucketplan {
 		        // 3. Construct your standard execution parameters for this discovered block range
 		        for (int shift = runStart; shift < runEnd; shift += cfg.lsdBits) {
 		            int bitsThisCycle = Math.min(cfg.lsdBits, runEnd - shift);
-		            long bitMask = tools.lowBitsMask(bitsThisCycle) << shift;
+		            long bitMask = Tools.lowBitsMask(bitsThisCycle) << shift;
 
 		            cycleShifts[cycles] = shift;
-		            cycleMasks[cycles] = tools.lowIntMask(bitsThisCycle);
+		            cycleMasks[cycles] = Tools.lowIntMask(bitsThisCycle);
 		            cycleBitMasks[cycles] = bitMask;
 
 		            cycles++;
@@ -204,7 +204,7 @@ public class lsdbucketplan {
 	        for (int cycle = 0; cycle < cycles; cycle++) {
 	            long bitMask = cycleBitMasks[cycle];
 	            counterSlots += (long) cycleMasks[cycle] + 1L;
-	            if (tuples.contiguousShift(bitMask) < 0) {
+	            if (Tuples.contiguousShift(bitMask) < 0) {
 	                sparsePasses++;
 	            }
 
@@ -213,8 +213,8 @@ public class lsdbucketplan {
 
 	            if (cycle + 1 < cycles) {
 	                long tailMask = variableMask & ~consumed;
-	                if (tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
-	                    counterSlots += tuples.tupleRadix(tailMask);
+	                if (Tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
+	                    counterSlots += Tuples.tupleRadix(tailMask);
 	                    sparsePasses++;
 	                    return cyclePlanScore(size, plannedCycles + 1, counterSlots, sparsePasses);
 	                }
@@ -244,7 +244,7 @@ public class lsdbucketplan {
 	            }
 
 	            counterSlots += 1L << bitsInCycle;
-	            if (tuples.contiguousShift(bitMask) < 0) {
+	            if (Tuples.contiguousShift(bitMask) < 0) {
 	                sparsePasses++;
 	            }
 
@@ -253,8 +253,8 @@ public class lsdbucketplan {
 
 	            if (remaining != 0L) {
 	                long tailMask = variableMask & ~consumed;
-	                if (tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
-	                    counterSlots += tuples.tupleRadix(tailMask);
+	                if (Tuples.tupleSpaceFitsDirectPass(tailMask, size)) {
+	                    counterSlots += Tuples.tupleRadix(tailMask);
 	                    sparsePasses++;
 	                    return cyclePlanScore(size, plannedPasses + 1, counterSlots, sparsePasses);
 	                }
@@ -295,7 +295,7 @@ public class lsdbucketplan {
 	    ) throws Exception {
 	        ArrayList<Future<?>> futures = new ArrayList<>(Apex.THREADS);
 	        ThreadLocal<Scratch> tls = ThreadLocal.withInitial(() ->
-	                new Scratch(Math.max(cfg.lsdRadix, tuples.directTupleRadixCap())));
+	                new Scratch(Math.max(cfg.lsdRadix, Tuples.directTupleRadixCap())));
 	        boolean preferDirectTupleInPlace = preferManyDirectTuplePartitionsInPlace(plan, cfg);
 	        PartitionWork[] localWorkItems = buildLocalMsdWorkItems(plan, cfg);
 
@@ -337,12 +337,12 @@ public class lsdbucketplan {
 	                }));
 	            }
 
-	            tools.waitForFutures(futures);
+	            Tools.waitForFutures(futures);
 	            return;
 	        }
 
 	        if (Apex.LSD_WORK_STEALING) {
-	            int[] workBuckets = msdbucketplan.buildLsdWorkBucketsByDescendingSize(plan, cfg);
+	            int[] workBuckets = Msdbucketplan.buildLsdWorkBucketsByDescendingSize(plan, cfg);
 	            if (workBuckets.length == 0) {
 	                return;
 	            }
@@ -395,7 +395,7 @@ public class lsdbucketplan {
 	            }
 	        }
 
-	        tools.waitForFutures(futures);
+	        Tools.waitForFutures(futures);
 	    }
 
 
@@ -421,16 +421,16 @@ public class lsdbucketplan {
 	            return;
 	        }
 	        if (plan.bucketDescending[b]) {
-	            tools.reverseRecordsInPlace(dst, startPos << 4, size);
+	            Tools.reverseRecordsInPlace(dst, startPos << 4, size);
 	            return;
 	        }
 
 	        if (size < cfg.tinyPartitionThreshold) {
-	            tinysort.tinyPartitionBitSort(dst, startPos, size, sc);
+	            Tinysort.tinyPartitionBitSort(dst, startPos, size, sc);
 	            return;
 	        }
 
-	        if (cycles == 0 && tuples.tryDirectTupleSpaceSort(
+	        if (cycles == 0 && Tuples.tryDirectTupleSpaceSort(
 	                scratch, dst, startPos, size, sc, tupleTailMask, false, preferDirectTupleInPlace
 	        )) {
 	            return;
@@ -533,7 +533,7 @@ public class lsdbucketplan {
 	        }
 
 	        if (tupleTailMask != 0L) {
-	            tuples.tupleCountingPass(
+	            Tuples.tupleCountingPass(
 	                    currentKeys,
 	                    currentValues,
 	                    nextKeys,
@@ -608,19 +608,19 @@ public class lsdbucketplan {
 	        if (useHeapUnroll8(size)) {
 	            int vectorEnd = size - (size & 7);
 	            for (; i < vectorEnd; i += 8) {
-	                counts[tools.digit(keys[i], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 1], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 2], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 3], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 4], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 5], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 6], shift, mask, bitMask)]++;
-	                counts[tools.digit(keys[i + 7], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 1], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 2], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 3], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 4], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 5], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 6], shift, mask, bitMask)]++;
+	                counts[Tools.digit(keys[i + 7], shift, mask, bitMask)]++;
 	            }
 	        }
 
 	        for (; i < size; i++) {
-	            counts[tools.digit(keys[i], shift, mask, bitMask)]++;
+	            counts[Tools.digit(keys[i], shift, mask, bitMask)]++;
 	        }
 	    }
 
@@ -641,49 +641,49 @@ public class lsdbucketplan {
 	            int vectorEnd = size - (size & 7);
 	            for (; i < vectorEnd; i += 8) {
 	                long k0 = currentKeys[i];
-	                int bin0 = tools.digit(k0, shift, mask, bitMask);
+	                int bin0 = Tools.digit(k0, shift, mask, bitMask);
 	                int pos0 = counts[bin0]++;
 	                nextKeys[pos0] = k0;
 	                nextValues[pos0] = currentValues[i];
 
 	                long k1 = currentKeys[i + 1];
-	                int bin1 = tools.digit(k1, shift, mask, bitMask);
+	                int bin1 = Tools.digit(k1, shift, mask, bitMask);
 	                int pos1 = counts[bin1]++;
 	                nextKeys[pos1] = k1;
 	                nextValues[pos1] = currentValues[i + 1];
 
 	                long k2 = currentKeys[i + 2];
-	                int bin2 = tools.digit(k2, shift, mask, bitMask);
+	                int bin2 = Tools.digit(k2, shift, mask, bitMask);
 	                int pos2 = counts[bin2]++;
 	                nextKeys[pos2] = k2;
 	                nextValues[pos2] = currentValues[i + 2];
 
 	                long k3 = currentKeys[i + 3];
-	                int bin3 = tools.digit(k3, shift, mask, bitMask);
+	                int bin3 = Tools.digit(k3, shift, mask, bitMask);
 	                int pos3 = counts[bin3]++;
 	                nextKeys[pos3] = k3;
 	                nextValues[pos3] = currentValues[i + 3];
 
 	                long k4 = currentKeys[i + 4];
-	                int bin4 = tools.digit(k4, shift, mask, bitMask);
+	                int bin4 = Tools.digit(k4, shift, mask, bitMask);
 	                int pos4 = counts[bin4]++;
 	                nextKeys[pos4] = k4;
 	                nextValues[pos4] = currentValues[i + 4];
 
 	                long k5 = currentKeys[i + 5];
-	                int bin5 = tools.digit(k5, shift, mask, bitMask);
+	                int bin5 = Tools.digit(k5, shift, mask, bitMask);
 	                int pos5 = counts[bin5]++;
 	                nextKeys[pos5] = k5;
 	                nextValues[pos5] = currentValues[i + 5];
 
 	                long k6 = currentKeys[i + 6];
-	                int bin6 = tools.digit(k6, shift, mask, bitMask);
+	                int bin6 = Tools.digit(k6, shift, mask, bitMask);
 	                int pos6 = counts[bin6]++;
 	                nextKeys[pos6] = k6;
 	                nextValues[pos6] = currentValues[i + 6];
 
 	                long k7 = currentKeys[i + 7];
-	                int bin7 = tools.digit(k7, shift, mask, bitMask);
+	                int bin7 = Tools.digit(k7, shift, mask, bitMask);
 	                int pos7 = counts[bin7]++;
 	                nextKeys[pos7] = k7;
 	                nextValues[pos7] = currentValues[i + 7];
@@ -692,7 +692,7 @@ public class lsdbucketplan {
 
 	        for (; i < size; i++) {
 	            long k = currentKeys[i];
-	            int bin = tools.digit(k, shift, mask, bitMask);
+	            int bin = Tools.digit(k, shift, mask, bitMask);
 	            int pos = counts[bin]++;
 	            nextKeys[pos] = k;
 	            nextValues[pos] = currentValues[i];
@@ -772,7 +772,7 @@ public class lsdbucketplan {
 	        }
 
 	        try {
-	            sc.ensureCounts(Math.max(cfg.lsdRadix, tuples.directTupleRadixCap()));
+	            sc.ensureCounts(Math.max(cfg.lsdRadix, Tuples.directTupleRadixCap()));
 	            int[] counts = sc.counts;
 
 	            long dstBase = startPos << 4;
@@ -799,7 +799,7 @@ public class lsdbucketplan {
 	                long targetBase = currentInDst ? scratchBase : dstBase;
 
 	                try {
-	                    tuples.parallelTupleCountingPassSegments(
+	                    Tuples.parallelTupleCountingPassSegments(
 	                            source,
 	                            sourceBase,
 	                            target,
@@ -817,7 +817,7 @@ public class lsdbucketplan {
 	            }
 
 	            if (tupleTailMask != 0L) {
-	                int mask = tuples.tupleRadix(tupleTailMask) - 1;
+	                int mask = Tuples.tupleRadix(tupleTailMask) - 1;
 	                int radixThisPass = mask + 1;
 	                sc.ensureCounts(radixThisPass);
 	                counts = sc.counts;
@@ -829,7 +829,7 @@ public class lsdbucketplan {
 	                long targetBase = currentInDst ? scratchBase : dstBase;
 
 	                try {
-	                    tuples.parallelTupleCountingPassSegments(
+	                    Tuples.parallelTupleCountingPassSegments(
 	                            source,
 	                            sourceBase,
 	                            target,
@@ -848,7 +848,7 @@ public class lsdbucketplan {
 
 	            if (!currentInDst) {
 	                try {
-	                    tools.parallelBulkCopy(scratch, scratchBase, dst, dstBase, size);
+	                    Tools.parallelBulkCopy(scratch, scratchBase, dst, dstBase, size);
 	                } catch (Exception e) {
 	                    throw new RuntimeException("Parallel off-heap blit failed", e);
 	                }
@@ -908,7 +908,7 @@ public class lsdbucketplan {
 	                        continue;
 	                    }
 
-	                    if (tuples.tupleSpaceFitsDirectPass(childVariableMasks[child], childSize)) {
+	                    if (Tuples.tupleSpaceFitsDirectPass(childVariableMasks[child], childSize)) {
 	                        count++;
 	                    }
 	                }
@@ -920,7 +920,7 @@ public class lsdbucketplan {
 	            if (size >= cfg.tinyPartitionThreshold &&
 	                    plan.cycleCounts[b] == 0 &&
 	                    plan.tupleTailMasks[b] != 0L &&
-	                    tuples.tupleSpaceFitsDirectPass(plan.tupleTailMasks[b], size)) {
+	                    Tuples.tupleSpaceFitsDirectPass(plan.tupleTailMasks[b], size)) {
 	                count++;
 	            }
 	        }
@@ -1031,10 +1031,10 @@ public class lsdbucketplan {
 	                return;
 	            }
 	            if (work.descending) {
-	                tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
+	                Tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
 	                return;
 	            }
-	            tinysort.tinyPartitionBitSort(dst, work.startPos, work.size, sc);
+	            Tinysort.tinyPartitionBitSort(dst, work.startPos, work.size, sc);
 	            return;
 	        }
 
@@ -1048,7 +1048,7 @@ public class lsdbucketplan {
 	            return;
 	        }
 	        if (work.descending) {
-	            tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
+	            Tools.reverseRecordsInPlace(dst, work.startPos << 4, work.size);
 	            return;
 	        }
 
@@ -1107,13 +1107,13 @@ public class lsdbucketplan {
 	        }
 
 	        long variableMask = plan.variableMasks[b];
-	        if (variableMask == 0L || tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
+	        if (variableMask == 0L || Tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
 	            return -1;
 	        }
 
 	        int highestVariableBit = 63 - Long.numberOfLeadingZeros(variableMask);
 	        int shift = Math.max(0, highestVariableBit - localBits + 1);
-	        long windowMask = tools.lowBitsMask(localBits) << shift;
+	        long windowMask = Tools.lowBitsMask(localBits) << shift;
 	        int windowBits = Long.bitCount(variableMask & windowMask);
 
 	        return windowBits >= Apex.LOCAL_MSD_MIN_WINDOW_BITS ? shift : -1;
@@ -1265,7 +1265,7 @@ public class lsdbucketplan {
 	        while (p < end) {
 	            long key = dst.get(Apex.LONG, p);
 	            if (lookupCandidate(tableKeys, tableIndexes, tableUsed, key) < 0) {
-	                if (!sawNonCore || tools.compareKeys(key, nonCoreMin) < 0) {
+	                if (!sawNonCore || Tools.compareKeys(key, nonCoreMin) < 0) {
 	                    nonCoreMin = key;
 	                }
 	                sawNonCore = true;
@@ -1273,7 +1273,7 @@ public class lsdbucketplan {
 	            p += Apex.RECORD_BYTES;
 	        }
 
-	        if (!sawNonCore || tools.compareKeys(coreMax, nonCoreMin) >= 0) {
+	        if (!sawNonCore || Tools.compareKeys(coreMax, nonCoreMin) >= 0) {
 	            return false;
 	        }
 
@@ -1301,7 +1301,7 @@ public class lsdbucketplan {
 	        }
 
 	        try {
-	            tools.parallelBulkCopy(scratch, scratchBase, dst, base, size);
+	            Tools.parallelBulkCopy(scratch, scratchBase, dst, base, size);
 	        } catch (Exception e) {
 	            throw new RuntimeException("Dominant core copy failed", e);
 	        }
@@ -1389,7 +1389,7 @@ public class lsdbucketplan {
 	            int count = counts[i];
 	            int j = i - 1;
 
-	            while (j >= 0 && tools.compareKeys(keys[j], key) > 0) {
+	            while (j >= 0 && Tools.compareKeys(keys[j], key) > 0) {
 	                keys[j + 1] = keys[j];
 	                counts[j + 1] = counts[j];
 	                j--;
@@ -1416,15 +1416,15 @@ public class lsdbucketplan {
 	        }
 
 	        if (size < cfg.tinyPartitionThreshold) {
-	            tinysort.tinyPartitionBitSort(dst, startPos, size, sc);
+	            Tinysort.tinyPartitionBitSort(dst, startPos, size, sc);
 	            return;
 	        }
 
 	        long tupleTailMask;
 	        int plannedCycles;
 
-	        if (tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
-	            tuples.tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc,
+	        if (Tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
+	            Tuples.tryDirectTupleSpaceSort(scratch, dst, startPos, size, sc,
 	                    variableMask, false, preferDirectTupleInPlace);
 	            return;
 	        }
@@ -1449,13 +1449,13 @@ public class lsdbucketplan {
 	            return;
 	        }
 
-	        plannedCycles = tuples.plannedCyclePrefixBeforeTupleTail(
+	        plannedCycles = Tuples.plannedCyclePrefixBeforeTupleTail(
 	                variableMask,
 	                sc.cycleBitMasks,
 	                cycles,
 	                size
 	        );
-	        tupleTailMask = tuples.tupleTailMaskAfterPrefix(
+	        tupleTailMask = Tuples.tupleTailMaskAfterPrefix(
 	                variableMask,
 	                sc.cycleBitMasks,
 	                plannedCycles,

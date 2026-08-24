@@ -2,7 +2,7 @@ package generator;
 
 import main.Apex;
 
-public class recordcountformode {
+public class Recordcountformode {
 	public  static long recordCountForMode(DataMode mode) {
 	        switch (mode) {
 	            case EMPTY:

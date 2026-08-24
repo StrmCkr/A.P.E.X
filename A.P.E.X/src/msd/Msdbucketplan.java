@@ -1,4 +1,4 @@
-package MSD;
+package msd;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
@@ -7,15 +7,15 @@ import java.util.Comparator;
 import java.util.TreeSet;
 import java.util.concurrent.Future;
 
-import LSD.lsdbucketplan;
-import Tools.tools;
-import Tuples.tuples;
-import config.configurations.Config;
-import histogram.buildhistogram;
-import histogram.histogram.HistogramResult;
+import config.Configurations.Config;
+import histogram.Buildhistogram;
+import histogram.Histogram.HistogramResult;
+import lsd.Lsdbucketplan;
 import main.Apex;
+import tools.Tools;
+import tuples.Tuples;
 
-public class msdbucketplan {
+public class Msdbucketplan {
 
 	public static class MsdBucketPlan {
 		public      final long[] starts;
@@ -87,7 +87,7 @@ public class msdbucketplan {
 	        plan.inputDescending = globallyMonotonic(result, false);
 
 	        long pos = 0;
-	        long lowerKeyMask = tools.lowBitsMask(msdShift);
+	        long lowerKeyMask = Tools.lowBitsMask(msdShift);
 	        int[] tempCycleShifts = new int[64];
 	        int[] tempCycleMasks = new int[64];
 	        long[] tempCycleBitMasks = new long[64];
@@ -146,10 +146,10 @@ public class msdbucketplan {
 	                    continue;
 	                }
 
-	                if (tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
+	                if (Tuples.tupleSpaceFitsDirectPass(variableMask, size)) {
 	                    plan.tupleTailMasks[b] = variableMask;
 	                } else {
-	                    int cycles = lsdbucketplan.buildLsdCyclePlan(
+	                    int cycles = Lsdbucketplan.buildLsdCyclePlan(
 	                            variableMask,
 	                            cfg,
 	                            msdShift,
@@ -162,13 +162,13 @@ public class msdbucketplan {
 	                    if (cycles == 0) {
 	                        plan.bucketFlags[b] = Apex.BUCKET_ALL_EQUAL;
 	                    } else {
-	                        int plannedCycles = tuples.plannedCyclePrefixBeforeTupleTail(
+	                        int plannedCycles = Tuples.plannedCyclePrefixBeforeTupleTail(
 	                                variableMask,
 	                                tempCycleBitMasks,
 	                                cycles,
 	                                size
 	                        );
-	                        long tupleTailMask = tuples.tupleTailMaskAfterPrefix(
+	                        long tupleTailMask = Tuples.tupleTailMaskAfterPrefix(
 	                                variableMask,
 	                                tempCycleBitMasks,
 	                                plannedCycles,
@@ -197,7 +197,7 @@ public class msdbucketplan {
 	
 	 public static MsdBucketPlan buildAdaptiveMsdBucketPlan(MemorySegment src, long n, Config cfg) throws Exception {
 	        int topShift = 64 - cfg.msdBits;
-	        HistogramResult topHist = buildhistogram.buildMsdHistograms(src, n, cfg, topShift);
+	        HistogramResult topHist = Buildhistogram.buildMsdHistograms(src, n, cfg, topShift);
 	        MsdBucketPlan topPlan = buildMsdBucketPlan(topHist, n, cfg, topShift);
 
 	        if (largestBucketSize(topPlan, cfg) != n) {
@@ -223,7 +223,7 @@ public class msdbucketplan {
 	                continue;
 	            }
 
-	            HistogramResult hist = buildhistogram.buildMsdHistograms(src, n, cfg, shift);
+	            HistogramResult hist = Buildhistogram.buildMsdHistograms(src, n, cfg, shift);
 	            MsdBucketPlan plan = buildMsdBucketPlan(hist, n, cfg, shift);
 
 	            if (largestBucketSize(plan, cfg) != n || shift == 0) {
@@ -263,7 +263,7 @@ public class msdbucketplan {
 	            }
 
 	            if (sawAny) {
-	                int cmp = tools.compareKeys(previousLast, result.firstKeys[t]);
+	                int cmp = Tools.compareKeys(previousLast, result.firstKeys[t]);
 	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
 	                    return false;
 	                }
@@ -294,7 +294,7 @@ public class msdbucketplan {
 	            }
 
 	            if (sawAny) {
-	                int cmp = tools.compareKeys(previousLast, result.bucketFirstKeys[t][bucket]);
+	                int cmp = Tools.compareKeys(previousLast, result.bucketFirstKeys[t][bucket]);
 	                if ((ascending && cmp > 0) || (!ascending && cmp < 0)) {
 	                    return false;
 	                }
@@ -320,7 +320,7 @@ public class msdbucketplan {
 	        boolean sparseParentPlan = sparseParentPlan(plan, cfg);
 
 	        for (int b = 0; b < cfg.msdBucketCount; b++) {
-	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, sparseParentPlan);
+	            int localShift = Lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, sparseParentPlan);
 	            if (localShift >= 0) {
 	                candidateBucketsTemp[candidateCount++] = b;
 	            }
@@ -331,12 +331,12 @@ public class msdbucketplan {
 	        }
 
 	        Arrays.fill(candidateIndexByBucket, -1);
-	        int localBits = lsdbucketplan.localMsdBitsForCandidateCount(cfg, candidateCount);
+	        int localBits = Lsdbucketplan.localMsdBitsForCandidateCount(cfg, candidateCount);
 	        int filteredCandidateCount = 0;
 
 	        for (int i = 0; i < candidateCount; i++) {
 	            int b = candidateBucketsTemp[i];
-	            int localShift = lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, localBits, sparseParentPlan);
+	            int localShift = Lsdbucketplan.localMsdShiftForBucket(plan, cfg, b, localBits, sparseParentPlan);
 	            if (localShift >= 0) {
 	                candidateIndexByBucket[b] = filteredCandidateCount;
 	                candidateBucketsTemp[filteredCandidateCount++] = b;
@@ -353,7 +353,7 @@ public class msdbucketplan {
 
 	        final int localCandidateCount = candidateCount;
 	        int[] candidateBuckets = Arrays.copyOf(candidateBucketsTemp, candidateCount);
-	        int localBucketCount = lsdbucketplan.localMsdBucketCount(localBits);
+	        int localBucketCount = Lsdbucketplan.localMsdBucketCount(localBits);
 	        int localBucketMask = localBucketCount - 1;
 	        int rows = Apex.THREADS * candidateCount;
 	        int[][] childHistograms = new int[rows][localBucketCount];
@@ -448,7 +448,7 @@ public class msdbucketplan {
 	            }));
 	        }
 
-	        tools.waitForFutures(futures);
+	        Tools.waitForFutures(futures);
 
 	        for (int candidateIndex = 0; candidateIndex < candidateCount; candidateIndex++) {
 	            int parent = candidateBuckets[candidateIndex];
@@ -457,7 +457,7 @@ public class msdbucketplan {
 	            long[] localVariableMasks = new long[localBucketCount];
 	            int[][] localThreadOffsets = new int[Apex.THREADS][localBucketCount];
 	            long pos = plan.starts[parent];
-	            long lowerMask = tools.lowBitsMask(plan.localMsdShifts[parent]);
+	            long lowerMask = Tools.lowBitsMask(plan.localMsdShifts[parent]);
 
 	            for (int child = 0; child < localBucketCount; child++) {
 	                localStarts[child] = pos;
@@ -529,11 +529,11 @@ public class msdbucketplan {
 	            return true;
 	        }
 
-	        return (variableMask & ~tools.lowBitsMask(firstVariableBit)) == 0L;
+	        return (variableMask & ~Tools.lowBitsMask(firstVariableBit)) == 0L;
 	    }
 
 	  static boolean windowContainsVariableBits(long variableMask, int shift, int bits) {
-	        long windowMask = tools.lowBitsMask(bits) << shift;
+	        long windowMask = Tools.lowBitsMask(bits) << shift;
 	        return (variableMask & windowMask) != 0L;
 	    }
 	  
@@ -543,7 +543,7 @@ public class msdbucketplan {
 	        }
 	        ArrayList<Future<Boolean>> futures = new ArrayList<>(Apex.THREADS);
 	        long chunk = n / Apex.THREADS;
-	        long prefixMask = ~tools.lowBitsMask(firstVariableBit);
+	        long prefixMask = ~Tools.lowBitsMask(firstVariableBit);
 	        long expected = src.get(Apex.LONG, 0) & prefixMask;
 
 	        for (int t = 0; t < Apex.THREADS; t++) {
@@ -616,7 +616,7 @@ public class msdbucketplan {
 	            for (int b = 0; b < cfg.msdBucketCount; b++) {
 	                int size = plan.sizes[b];
 
-	                if (lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
+	                if (Lsdbucketplan.bucketHasLsdWork(plan, cfg, b)) {
 	                    packed[workCount++] = (((long) -size) << 32) | (b & 0xFFFFFFFFL);
 	                }
 	            }

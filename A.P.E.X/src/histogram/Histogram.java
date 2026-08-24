@@ -2,10 +2,10 @@ package histogram;
 
 import java.util.Arrays;
 
-import config.configurations.Config;
+import config.Configurations.Config;
 import main.Apex;
 
-public class histogram {
+public class Histogram {
 	
 	public static class HistogramResult {
 		public   final int[][] histograms;

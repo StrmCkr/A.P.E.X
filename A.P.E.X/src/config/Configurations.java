@@ -1,6 +1,6 @@
 package config;
 
-public final class configurations {
+public final class Configurations {
 	
 public static class Config {
         public final int msdBits;

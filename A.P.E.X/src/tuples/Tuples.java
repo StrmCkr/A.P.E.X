@@ -1,15 +1,15 @@
-package Tuples;
+package tuples;
 
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.concurrent.Future;
 
-import Tools.tools;
 import main.Apex;
 import main.Apex.Scratch;
+import tools.Tools;
 
-public class tuples {
+public class Tuples {
     
     public static int directTupleRadixCap() {
         int tupleBits = Math.max(Apex.DIRECT_TUPLE_BITS, Apex.DIRECT_TUPLE_CONTIGUOUS_BITS);
@@ -178,7 +178,7 @@ public class tuples {
                 long key = dst.get(Apex.LONG, p);
                 counts[(int) (((key ^ keyOrderXor) >>> tupleShift) & tupleMask)]++;
                 if (checkOrder && (ascending || descending) && i > 0) {
-                    int cmp = tools.compareKeys(previous, key);
+                    int cmp = Tools.compareKeys(previous, key);
                     ascending &= cmp <= 0;
                     descending &= cmp >= 0;
                 }
@@ -190,7 +190,7 @@ public class tuples {
                 long key = dst.get(Apex.LONG, p);
                 counts[(int) Long.compress(key ^ keyOrderXor, entropyMask)]++;
                 if (checkOrder && (ascending || descending) && i > 0) {
-                    int cmp = tools.compareKeys(previous, key);
+                    int cmp = Tools.compareKeys(previous, key);
                     ascending &= cmp <= 0;
                     descending &= cmp >= 0;
                 }
@@ -205,7 +205,7 @@ public class tuples {
             }
 
             if (descending) {
-                tools.reverseRecordsInPlace(dst, base, size);
+                Tools.reverseRecordsInPlace(dst, base, size);
                 return;
             }
         }
@@ -316,7 +316,7 @@ public class tuples {
             }
 
             try {
-                tools.parallelBulkCopy(scratch, dstBase, dst, dstBase, size);
+                Tools.parallelBulkCopy(scratch, dstBase, dst, dstBase, size);
             } catch (Exception e) {
                 throw new RuntimeException("Parallel off-heap blit failed", e);
             }
@@ -345,7 +345,7 @@ public class tuples {
 
             if (bitsInCycle == cycleBits || variableMask == 0L) {
                 cycleBitMasks[cycles] = bitMask;
-                cycleMasks[cycles] = tools.lowIntMask(bitsInCycle);
+                cycleMasks[cycles] = Tools.lowIntMask(bitsInCycle);
                 cycleShifts[cycles] = contiguousShift(bitMask);
                 cycles++;
 
@@ -360,7 +360,7 @@ public class tuples {
     public static int contiguousShift(long bitMask) {
         int shift = Long.numberOfTrailingZeros(bitMask);
         int bits = Long.bitCount(bitMask);
-        return ((bitMask >>> shift) == tools.lowBitsMask(bits)) ? shift : -1;
+        return ((bitMask >>> shift) == Tools.lowBitsMask(bits)) ? shift : -1;
     }
 
     public static int plannedCyclePrefixBeforeTupleTail(long variableMask, long[] cycleBitMasks, int cycles) {
@@ -391,7 +391,7 @@ public class tuples {
             Scratch sc,
             long entropyMask
     ) {
-        int radix = tuples.tupleRadix(entropyMask);
+        int radix = Tuples.tupleRadix(entropyMask);
         sc.ensureCounts(radix);
         Arrays.fill(sc.counts, 0, radix, 0);
         int tupleShift = tupleShift(entropyMask);
@@ -446,7 +446,7 @@ public class tuples {
             long entropyMask
     ) {
         tupleCountingPassSegments(source, sourceBase, target, targetBase, size, counts,
-                tupleShift(entropyMask), tuples.tupleRadix(entropyMask) - 1, entropyMask);
+                tupleShift(entropyMask), Tuples.tupleRadix(entropyMask) - 1, entropyMask);
     }
 
     public static void tupleCountingPassSegments(
@@ -682,7 +682,7 @@ public class tuples {
             }));
         }
 
-        tools.waitForFutures(futures);
+        Tools.waitForFutures(futures);
 
         int sum = 0;
         for (int bin = 0; bin < radixThisPass; bin++) {
@@ -798,6 +798,6 @@ public class tuples {
             }));
         }
 
-        tools.waitForFutures(futures);
+        Tools.waitForFutures(futures);
     }
 }
