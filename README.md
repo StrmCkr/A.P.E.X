@@ -68,12 +68,18 @@ recordCount * 16 bytes * 2
 
 ```text
 pom.xml                         Maven parent project
+index.html                      Root GitHub Pages entry link
+.nojekyll                       Root GitHub Pages no-Jekyll marker
 A.P.E.X/                        Core library and CLI jar
 A.P.E.X-benchmark/              Comparison benchmark harness
 A.P.E.X-jmh/                    Standard JMH benchmarks
 A.P.E.X-examples/               Runnable library usage examples
 documents/                      Project documentation
-docs/visualizer/                GitHub Pages visualizer
+visualizer/                     Root visualizer copy
+docs/                           GitHub Pages /docs publishing folder
+docs/index.html                 /docs GitHub Pages entry link
+docs/.nojekyll                  /docs GitHub Pages no-Jekyll marker
+docs/visualizer/                /docs visualizer copy
 ```
 
 Core source packages use the Maven group namespace:
@@ -265,22 +271,11 @@ standard JVM benchmarking of the A.P.E.X. pipeline itself.
 - [Benchmark Guide](documents/benchmark.md)
 - [Data and Descriptors](documents/data-descriptors.md)
 - [Operation Model](documents/operation-execution.md)
-- [Visualizer](docs/visualizer/index.html)
+- [Live Visualizer](https://strmckr.github.io/A.P.E.X/visualizer/)
+- [Local Visualizer](visualizer/index.html)
+- [GitHub Pages Visualizer File](docs/visualizer/index.html)
 
 ## GitHub Pages Visualizer
-
-The visualizer is published from:
-
-```text
-docs/visualizer/
-```
-
-For GitHub Pages, set:
-
-```text
-Branch: main
-Folder: /docs
-```
 
 The live visualizer URL is:
 
@@ -288,7 +283,24 @@ The live visualizer URL is:
 https://strmckr.github.io/A.P.E.X/visualizer/
 ```
 
-The `/documents` folder remains the project documentation folder.
+The repository keeps both visualizer locations so either GitHub Pages source
+setting works:
+
+```text
+visualizer/                     Use when GitHub Pages publishes from repository root
+docs/visualizer/                Use when GitHub Pages publishes from /docs
+```
+
+For GitHub Pages using `/docs`, set:
+
+```text
+Branch: main
+Folder: /docs
+```
+
+The root `index.html` and `docs/index.html` files are simple entry pages that
+link to `visualizer/`. The `/documents` folder remains the project documentation
+folder.
 
 ## License
 
