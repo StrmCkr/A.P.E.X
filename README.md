@@ -288,6 +288,7 @@ standard JVM benchmarking of the A.P.E.X. pipeline itself.
 
 ## Documentation
 
+- [Mathematics](https://github.com/StrmCkr/A.P.E.X/blob/main/documents/A_P_E_X.pdf)
 - [Usage Guide](documents/usage.md)
 - [Benchmark Guide](documents/benchmark.md)
 - [Data and Descriptors](documents/data-descriptors.md)
