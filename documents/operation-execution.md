@@ -298,7 +298,7 @@ The command-line controls are intentionally limited:
 | Warmup size | `warmupRecords`, `warmup` |
 | Sweep mode | `sweep`, `sweepRecords`, `sweepN` |
 
-The browser visualizer in [visualizer/index.html](../visualizer/index.html)
+The browser visualizer in [docs/visualizer/index.html](../docs/visualizer/index.html)
 mirrors the core execution controls:
 
 | Visualizer control | Values |

@@ -472,12 +472,12 @@ modes=RANDOM..ZIPFIANISH
 
 The browser visualizer is static:
 
-- [visualizer/index.html](../visualizer/index.html)
-- [visualizer/app.js](../visualizer/app.js)
-- [visualizer/styles.css](../visualizer/styles.css)
+- [docs/visualizer/index.html](../docs/visualizer/index.html)
+- [docs/visualizer/app.js](../docs/visualizer/app.js)
+- [docs/visualizer/styles.css](../docs/visualizer/styles.css)
 
-Open `../visualizer/index.html` locally from this document folder, or open
-`visualizer/index.html` from the repository root.
+Open `../docs/visualizer/index.html` locally from this document folder, or open
+`docs/visualizer/index.html` from the repository root.
 
 The visualizer shows:
 

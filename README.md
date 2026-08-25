@@ -73,9 +73,7 @@ A.P.E.X-benchmark/              Comparison benchmark harness
 A.P.E.X-jmh/                    Standard JMH benchmarks
 A.P.E.X-examples/               Runnable library usage examples
 documents/                      Project documentation
-visualizer/                     Static browser visualizer
-docs/                           GitHub Pages visualizer publish folder
-index.html                      Root visualizer entry point
+docs/visualizer/                GitHub Pages visualizer
 ```
 
 Core source packages use the Maven group namespace:
@@ -267,16 +265,14 @@ standard JVM benchmarking of the A.P.E.X. pipeline itself.
 - [Benchmark Guide](documents/benchmark.md)
 - [Data and Descriptors](documents/data-descriptors.md)
 - [Operation Model](documents/operation-execution.md)
-- [Visualizer](visualizer/index.html)
+- [Visualizer](docs/visualizer/index.html)
 
 ## GitHub Pages Visualizer
 
-The visualizer is available in two static layouts:
+The visualizer is published from:
 
 ```text
-index.html          Root Pages entry point
-docs/index.html     GitHub Pages /docs publishing entry point
-visualizer/         Source copy kept separate from project documentation
+docs/visualizer/
 ```
 
 For GitHub Pages, set:
@@ -286,8 +282,13 @@ Branch: main
 Folder: /docs
 ```
 
-The `/docs` folder contains the browser-ready visualizer files. The
-`/documents` folder remains the project documentation folder.
+The live visualizer URL is:
+
+```text
+https://strmckr.github.io/A.P.E.X/visualizer/
+```
+
+The `/documents` folder remains the project documentation folder.
 
 ## License
 
