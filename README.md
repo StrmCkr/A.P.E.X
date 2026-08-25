@@ -1,5 +1,7 @@
 # A.P.E.X.
 
+[![Maven CI](https://github.com/StrmCkr/A.P.E.X/actions/workflows/maven-ci.yml/badge.svg)](https://github.com/StrmCkr/A.P.E.X/actions/workflows/maven-ci.yml)
+
 A.P.E.X. is a high-performance Java sorting framework for large fixed-width
 64-bit key/value record datasets. It uses descriptor-driven radix planning,
 parallel scatter, per-bucket dispatch, tuple projection, tiny-sort fallbacks,
@@ -113,6 +115,25 @@ A.P.E.X-benchmark/target/apex-benchmark-1.0.0-SNAPSHOT.jar
 A.P.E.X-jmh/target/benchmarks.jar
 A.P.E.X-examples/target/apex-examples-1.0.0-SNAPSHOT.jar
 ```
+
+## GitHub Build Check
+
+The repository includes a GitHub Actions workflow:
+
+```text
+.github/workflows/maven-ci.yml
+```
+
+It runs on pushes and pull requests to `main` or `master`, sets up JDK 25, and
+verifies both the core library and optional tools:
+
+```bash
+mvn --batch-mode --no-transfer-progress package
+mvn --batch-mode --no-transfer-progress -Ptools package
+```
+
+The workflow packages the jars but does not launch the long benchmark runs. It
+also uploads the packaged jars as short-lived workflow artifacts.
 
 ## Run In Eclipse
 
