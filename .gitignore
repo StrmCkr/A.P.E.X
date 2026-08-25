@@ -1,0 +1,15 @@
+/work/
+
+# Maven and Java build output
+target/
+bin/
+out/
+*.class
+
+# Legacy local dependency drops; dependencies belong in pom.xml.
+lib/
+
+# IDE metadata
+.project
+.settings/
+.classpath

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>io.github.strmckr</groupId>
+        <artifactId>apex-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>apex</artifactId>
+    <packaging>jar</packaging>
+
+    <name>A.P.E.X</name>
+    <description>Adaptive Parallel Extremal Dispatch sorting framework.</description>
+
+    <licenses>
+        <license>
+            <name>GNU Affero General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.en.html</url>
+        </license>
+    </licenses>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>25</maven.compiler.release>
+        <apex.exec.skip>false</apex.exec.skip>
+        <apex.jvm.xmx>-Xmx16G</apex.jvm.xmx>
+        <apex.jvm.maxDirectMemory>-XX:MaxDirectMemorySize=80g</apex.jvm.maxDirectMemory>
+        <apex.arg0></apex.arg0>
+        <apex.arg1></apex.arg1>
+        <apex.arg2></apex.arg2>
+        <apex.arg3></apex.arg3>
+        <apex.arg4></apex.arg4>
+        <apex.arg5></apex.arg5>
+        <apex.arg6></apex.arg6>
+        <apex.arg7></apex.arg7>
+        <apex.arg8></apex.arg8>
+        <apex.arg9></apex.arg9>
+        <apex.arg10></apex.arg10>
+        <apex.arg11></apex.arg11>
+        <apex.arg12></apex.arg12>
+        <apex.arg13></apex.arg13>
+        <apex.arg14></apex.arg14>
+        <apex.arg15></apex.arg15>
+        <main.class>io.github.strmckr.apex.Apex</main.class>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>6.1.3</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.1</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <compilerArgs>
+                        <arg>--enable-preview</arg>
+                        <arg>--add-modules</arg>
+                        <arg>jdk.incubator.vector</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.3</version>
+                <configuration>
+                    <argLine>--enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector</argLine>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>${main.class}</mainClass>
+                        </manifest>
+                    </archive>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.5.0</version>
+                <configuration>
+                    <skip>${apex.exec.skip}</skip>
+                    <executable>${java.home}/bin/java</executable>
+                    <classpathScope>runtime</classpathScope>
+                    <arguments>
+                        <argument>--enable-preview</argument>
+                        <argument>--enable-native-access=ALL-UNNAMED</argument>
+                        <argument>--add-modules</argument>
+                        <argument>jdk.incubator.vector</argument>
+                        <argument>${apex.jvm.xmx}</argument>
+                        <argument>${apex.jvm.maxDirectMemory}</argument>
+                        <argument>-cp</argument>
+                        <classpath/>
+                        <argument>io.github.strmckr.apex.Apex</argument>
+                        <argument>${apex.arg0}</argument>
+                        <argument>${apex.arg1}</argument>
+                        <argument>${apex.arg2}</argument>
+                        <argument>${apex.arg3}</argument>
+                        <argument>${apex.arg4}</argument>
+                        <argument>${apex.arg5}</argument>
+                        <argument>${apex.arg6}</argument>
+                        <argument>${apex.arg7}</argument>
+                        <argument>${apex.arg8}</argument>
+                        <argument>${apex.arg9}</argument>
+                        <argument>${apex.arg10}</argument>
+                        <argument>${apex.arg11}</argument>
+                        <argument>${apex.arg12}</argument>
+                        <argument>${apex.arg13}</argument>
+                        <argument>${apex.arg14}</argument>
+                        <argument>${apex.arg15}</argument>
+                    </arguments>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
