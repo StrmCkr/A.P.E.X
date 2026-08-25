@@ -2,7 +2,7 @@
 <launchConfiguration type="org.eclipse.m2e.Maven2LaunchConfigurationType">
     <intAttribute key="M2_COLORS" value="0"/>
     <booleanAttribute key="M2_DEBUG_OUTPUT" value="false"/>
-    <stringAttribute key="M2_GOALS" value="-pl A.P.E.X -Dapex.arg0=sweep=true -Dapex.arg1=sweepRecords=100m -Dapex.arg2=threads=auto -Dapex.arg3=config=12,13,128 -Dapex.arg4=warmup=10m -Dapex.arg5=tuplePacking=true -Dapex.arg6=tupleBits=16 -Dapex.arg7=reporting=summary -Dapex.arg8=reportFile=target/reports/apex-sweep-100m.txt compile exec:exec"/>
+    <stringAttribute key="M2_GOALS" value="-pl A.P.E.X -Dapex.arg0=sweep=true -Dapex.arg1=sweepRecords=100m -Dapex.arg2=threads=auto -Dapex.arg3=config=12,13,128 -Dapex.arg4=warmup=100m -Dapex.arg5=tuplePacking=true -Dapex.arg6=tupleBits=16 -Dapex.arg7=reporting=summary -Dapex.arg8=reportFile=target/reports/apex-sweep-100m.txt compile exec:exec"/>
     <booleanAttribute key="M2_NON_RECURSIVE" value="false"/>
     <booleanAttribute key="M2_OFFLINE" value="false"/>
     <stringAttribute key="M2_PROFILES" value=""/>

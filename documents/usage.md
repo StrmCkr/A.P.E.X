@@ -433,16 +433,19 @@ selected-config warmup size.
 Run all data modes:
 
 ```bash
-java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -jar A.P.E.X/target/apex-1.0.0-SNAPSHOT.jar sweep=true sweepRecords=100m
+java --enable-preview --enable-native-access=ALL-UNNAMED --add-modules jdk.incubator.vector -jar A.P.E.X/target/apex-1.0.0-SNAPSHOT.jar sweep=true sweepRecords=100m warmup=100m
 ```
 
 `sweepRecords` sets records per mode during the sweep. The sweep runs every
 currently defined value in `DataMode`.
 
 In Eclipse, use `A.P.E.X/Run Apex Sweep 100M.launch` for the same all-mode
-100M run with a fixed config and a 10M selected-config warmup. Use this Maven
+100M run with a fixed config and a 100M selected-config warmup. Use this Maven
 launcher instead of `Run As > Java Application`; it builds the module first and
 uses the correct classpath.
+
+Shorter warmups are useful for quick checks, but they are not stable
+performance measurements for the 100M path.
 
 ## Data Modes
 

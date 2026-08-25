@@ -153,6 +153,10 @@ Use these launchers instead of `Run As > Java Application` when running from
 Eclipse. They compile the Maven module first and attach the correct runtime
 classpath.
 
+For 100M performance runs, use a 100M selected-config warmup. A smaller warmup
+can leave the JVM compiling hot scatter/refinement code during the measured run,
+which makes the first measured pass look slower than the steady-state path.
+
 ## Use As A Library
 
 Maven dependency:
