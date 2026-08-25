@@ -74,7 +74,8 @@ A.P.E.X-jmh/                    Standard JMH benchmarks
 A.P.E.X-examples/               Runnable library usage examples
 documents/                      Project documentation
 visualizer/                     Static browser visualizer
-index.html                      GitHub Pages entry point for the visualizer
+docs/                           GitHub Pages visualizer publish folder
+index.html                      Root visualizer entry point
 ```
 
 Core source packages use the Maven group namespace:
@@ -270,9 +271,23 @@ standard JVM benchmarking of the A.P.E.X. pipeline itself.
 
 ## GitHub Pages Visualizer
 
-Publish GitHub Pages from the repository root. The root `index.html` redirects
-to `visualizer/`, keeping the browser visualizer in its own folder while still
-making the project Pages URL open the visualizer.
+The visualizer is available in two static layouts:
+
+```text
+index.html          Root Pages entry point
+docs/index.html     GitHub Pages /docs publishing entry point
+visualizer/         Source copy kept separate from project documentation
+```
+
+For GitHub Pages, set:
+
+```text
+Branch: main
+Folder: /docs
+```
+
+The `/docs` folder contains the browser-ready visualizer files. The
+`/documents` folder remains the project documentation folder.
 
 ## License
 
